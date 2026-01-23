@@ -1,0 +1,6 @@
+@DRaaS.ControlPlane_HostAddress = http://localhost:5087
+
+GET {{DRaaS.ControlPlane_HostAddress}}/weatherforecast/
+Accept: application/json
+
+###
