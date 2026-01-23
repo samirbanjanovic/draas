@@ -3,6 +3,9 @@
 ##
 ## Get latest from `dotnet new gitignore`
 
+# dotnet ignore
+[Pp]roperties
+
 # dotenv files
 .env
 
