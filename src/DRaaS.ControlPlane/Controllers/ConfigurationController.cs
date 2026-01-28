@@ -1,5 +1,6 @@
 ﻿using DRaaS.Core.Models;
 using DRaaS.Core.Providers;
+using DRaaS.Core.Services.Monitoring;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Server.Kestrel.Core.Features;
 using Microsoft.AspNetCore.JsonPatch;
@@ -11,10 +12,14 @@ namespace DRaaS.ControlPlane.Controllers;
 public class ConfigurationController : ControllerBase
 {
     private readonly IDrasiServerConfigurationProvider _drasiServerConfigurationProvider;
+    private readonly IStatusUpdateService _statusUpdateService;
 
-    public ConfigurationController(IDrasiServerConfigurationProvider drasiServerConfigurationProvider)
+    public ConfigurationController(
+        IDrasiServerConfigurationProvider drasiServerConfigurationProvider,
+        IStatusUpdateService statusUpdateService)
     {
         _drasiServerConfigurationProvider = drasiServerConfigurationProvider;
+        _statusUpdateService = statusUpdateService;
     }
 
     [HttpPatch]
@@ -31,7 +36,19 @@ public class ConfigurationController : ControllerBase
         try
         {
             var updatedConfiguration = await _drasiServerConfigurationProvider.ApplyPatchAsync(instanceId, patchDocument);
-            return Ok(updatedConfiguration);
+
+            // Trigger reconciliation by publishing configuration changed event
+            await _statusUpdateService.PublishStatusUpdateAsync(
+                instanceId,
+                InstanceStatus.ConfigurationChanged,
+                "ConfigurationController",
+                new Dictionary<string, string>
+                {
+                    ["ChangeType"] = "PatchApplied",
+                    ["Timestamp"] = DateTime.UtcNow.ToString("O")
+                });
+
+            return Accepted(updatedConfiguration); // 202 - Change accepted, will be reconciled
         }
         catch (KeyNotFoundException)
         {
@@ -54,4 +71,3 @@ public class ConfigurationController : ControllerBase
         }
     }
 }
-    

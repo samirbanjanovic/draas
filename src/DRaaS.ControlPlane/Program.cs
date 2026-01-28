@@ -98,6 +98,19 @@ public class Program
         // Learn more about configuring OpenAPI at https://aka.ms/aspnet/openapi
         builder.Services.AddOpenApi();
 
+        // OPTIONAL: Enable in-process reconciliation
+        // Uncomment the following lines to run reconciliation in the same process as the Web API
+        // For production, run DRaaS.Reconciliation as a separate service
+        /*
+        builder.Services.Configure<DRaaS.Core.Services.Reconciliation.ReconciliationOptions>(
+            builder.Configuration.GetSection("Reconciliation"));
+
+        builder.Services.AddSingleton<DRaaS.Core.Services.Reconciliation.IConfigurationStateStore, DRaaS.Reconciliation.ConfigurationStateStore>();
+        builder.Services.AddSingleton<DRaaS.Reconciliation.Strategies.IReconciliationStrategy, DRaaS.Reconciliation.Strategies.RestartReconciliationStrategy>();
+        builder.Services.AddSingleton<DRaaS.Core.Services.Reconciliation.IReconciliationService, DRaaS.Reconciliation.ReconciliationService>();
+        builder.Services.AddHostedService<DRaaS.Reconciliation.ReconciliationBackgroundService>();
+        */
+
         var app = builder.Build();
 
         // Start status monitoring for polling-based platforms (Process)

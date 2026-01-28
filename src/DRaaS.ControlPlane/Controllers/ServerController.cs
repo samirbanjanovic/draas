@@ -15,13 +15,16 @@ public class ServerController : ControllerBase
 {
     private readonly IDrasiInstanceService _instanceService;
     private readonly IDrasiServerConfigurationProvider _configurationProvider;
+    private readonly IInstanceManagerFactory _managerFactory;
 
     public ServerController(
         IDrasiInstanceService instanceService,
-        IDrasiServerConfigurationProvider configurationProvider)
+        IDrasiServerConfigurationProvider configurationProvider,
+        IInstanceManagerFactory managerFactory)
     {
         _instanceService = instanceService;
         _configurationProvider = configurationProvider;
+        _managerFactory = managerFactory;
     }
 
     // Instance Management
@@ -146,5 +149,127 @@ public class ServerController : ControllerBase
     {
         var serverConfig = await _configurationProvider.UpdateLogLevelAsync(instanceId, logLevel);
         return Ok(serverConfig);
+    }
+
+    // Instance Lifecycle Operations
+    [HttpPost]
+    [Route("instances/{instanceId}/start")]
+    public async Task<IActionResult> StartInstance(
+        string instanceId,
+        [FromBody] Configuration? configuration = null)
+    {
+        try
+        {
+            var instance = await _instanceService.GetInstanceAsync(instanceId);
+            if (instance == null)
+            {
+                return NotFound($"Instance '{instanceId}' not found");
+            }
+
+            // Get configuration (use provided or fetch stored)
+            var config = configuration ?? await _configurationProvider.GetConfigurationAsync(instanceId);
+            if (config == null)
+            {
+                return BadRequest("No configuration available for instance");
+            }
+
+            // Get the appropriate manager for the platform
+            var manager = _managerFactory.GetManager(instance.PlatformType);
+            if (manager == null)
+            {
+                return BadRequest($"No manager found for platform '{instance.PlatformType}'");
+            }
+
+            // Start the instance
+            await manager.StartInstanceAsync(instanceId, config);
+
+            // Update status
+            await _instanceService.UpdateInstanceStatusAsync(instanceId, InstanceStatus.Running);
+
+            return Ok($"Instance '{instanceId}' started successfully");
+        }
+        catch (Exception ex)
+        {
+            return StatusCode(500, $"Failed to start instance: {ex.Message}");
+        }
+    }
+
+    [HttpPost]
+    [Route("instances/{instanceId}/stop")]
+    public async Task<IActionResult> StopInstance(string instanceId)
+    {
+        try
+        {
+            var instance = await _instanceService.GetInstanceAsync(instanceId);
+            if (instance == null)
+            {
+                return NotFound($"Instance '{instanceId}' not found");
+            }
+
+            // Get the appropriate manager for the platform
+            var manager = _managerFactory.GetManager(instance.PlatformType);
+            if (manager == null)
+            {
+                return BadRequest($"No manager found for platform '{instance.PlatformType}'");
+            }
+
+            // Stop the instance
+            await manager.StopInstanceAsync(instanceId);
+
+            // Update status
+            await _instanceService.UpdateInstanceStatusAsync(instanceId, InstanceStatus.Stopped);
+
+            return Ok($"Instance '{instanceId}' stopped successfully");
+        }
+        catch (Exception ex)
+        {
+            return StatusCode(500, $"Failed to stop instance: {ex.Message}");
+        }
+    }
+
+    [HttpPost]
+    [Route("instances/{instanceId}/restart")]
+    public async Task<IActionResult> RestartInstance(string instanceId)
+    {
+        try
+        {
+            var instance = await _instanceService.GetInstanceAsync(instanceId);
+            if (instance == null)
+            {
+                return NotFound($"Instance '{instanceId}' not found");
+            }
+
+            // Get configuration
+            var config = await _configurationProvider.GetConfigurationAsync(instanceId);
+            if (config == null)
+            {
+                return BadRequest("No configuration available for instance");
+            }
+
+            // Get the appropriate manager for the platform
+            var manager = _managerFactory.GetManager(instance.PlatformType);
+            if (manager == null)
+            {
+                return BadRequest($"No manager found for platform '{instance.PlatformType}'");
+            }
+
+            // Stop the instance
+            await manager.StopInstanceAsync(instanceId);
+
+            // Small delay for clean shutdown
+            await Task.Delay(TimeSpan.FromSeconds(2));
+
+            // Start the instance
+            await manager.StartInstanceAsync(instanceId, config);
+
+            // Update status
+            await _instanceService.UpdateInstanceStatusAsync(instanceId, InstanceStatus.Running);
+
+            return Ok($"Instance '{instanceId}' restarted successfully");
+        }
+        catch (Exception ex)
+        {
+            return StatusCode(500, $"Failed to restart instance: {ex.Message}");
+        }
     }
 }

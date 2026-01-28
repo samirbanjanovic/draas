@@ -28,6 +28,13 @@ Services/
 │   ├── IPlatformOrchestratorService.cs
 │   └── PlatformOrchestratorService.cs
 │
+├── Reconciliation/         # Desired state reconciliation
+│   ├── IReconciliationService.cs
+│   ├── IConfigurationStateStore.cs
+│   ├── ReconciliationStrategy.cs
+│   ├── DriftDetectionResult.cs
+│   └── ReconciliationOptions.cs
+│
 └── Factory/                # Factory patterns
     ├── IInstanceManagerFactory.cs
     └── InstanceManagerFactory.cs
@@ -137,6 +144,47 @@ Services/
 
 ---
 
+### 🔄 Reconciliation
+**Purpose**: Desired state reconciliation and drift detection
+
+**Key Responsibilities**:
+- Compare desired configuration state with actual running state
+- Detect configuration drift
+- Apply reconciliation strategies to fix drift
+- Provide audit trail of reconciliation actions
+- Support multiple reconciliation strategies (restart, rolling update, blue-green, canary, manual)
+
+**Key Classes**:
+- `IReconciliationService`: Main reconciliation interface
+- `IConfigurationStateStore`: Manages desired vs actual state
+- `ReconciliationStrategy`: Enum for reconciliation approaches
+- `DriftDetectionResult`: Result model with drift details
+- `ReconciliationOptions`: Configuration settings
+
+**Reconciliation Patterns**:
+- **Event-Driven**: Triggered by configuration change events
+- **Periodic**: Background loop checks all instances every 30s (default)
+- **Manual**: Explicit API trigger for on-demand reconciliation
+
+**Use Cases**:
+- Configuration changes applied to ControlPlane API
+- External configuration changes (Git commits, Cosmos updates)
+- Self-healing after instance crashes or manual changes
+- Staged deployments with blue-green or canary strategies
+
+**Future Implementations**:
+- `ReconciliationService`: Concrete implementation (lives in DRaaS.Reconciliation project)
+- `ReconciliationBackgroundService`: Hosted service for periodic reconciliation
+- Strategy implementations: Restart, RollingUpdate, BlueGreen, Canary
+
+**Dependencies**:
+- Storage (read/write actual state)
+- Instance (query instances to reconcile)
+- Monitoring (trigger on configuration change events)
+- Providers (call instance managers to apply changes)
+
+---
+
 ### 🏭 Factory
 **Purpose**: Factory pattern for platform manager selection
 
@@ -232,6 +280,7 @@ All services use the pattern: `DRaaS.Core.Services.<Domain>`
 - `DRaaS.Core.Services.ResourceAllocation`
 - `DRaaS.Core.Services.Monitoring`
 - `DRaaS.Core.Services.Orchestration`
+- `DRaaS.Core.Services.Reconciliation`
 - `DRaaS.Core.Services.Factory`
 
 When importing, use specific namespaces:
@@ -240,6 +289,7 @@ When importing, use specific namespaces:
 using DRaaS.Core.Services.Instance;
 using DRaaS.Core.Services.Storage;
 using DRaaS.Core.Services.Monitoring;
+using DRaaS.Core.Services.Reconciliation;
 ```
 
 Avoid the generic `using DRaaS.Core.Services;` import.
@@ -250,7 +300,7 @@ Avoid the generic `using DRaaS.Core.Services;` import.
 
 When adding new services, follow this process:
 
-1. **Identify the domain**: Does it fit Instance, Storage, Monitoring, Orchestration, ResourceAllocation, or Factory?
+1. **Identify the domain**: Does it fit Instance, Storage, Monitoring, Orchestration, ResourceAllocation, Reconciliation, or Factory?
 2. **Create interface first**: Start with `I{ServiceName}.cs`
 3. **Implement the service**: Create `{ServiceName}.cs`
 4. **Update namespace**: Use `DRaaS.Core.Services.<Domain>`

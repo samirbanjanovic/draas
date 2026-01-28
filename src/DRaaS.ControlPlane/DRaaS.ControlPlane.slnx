@@ -3,5 +3,6 @@
     <File Path="../../README.md" />
   </Folder>
   <Project Path="../DRaaS.Core/DRaaS.Core.csproj" Id="317c15e9-70ae-4e40-b6b8-5cbda523a0a1" />
+  <Project Path="../DRaaS.Reconciliation/DRaaS.Reconciliation.csproj" />
   <Project Path="DRaaS.ControlPlane.csproj" />
 </Solution>

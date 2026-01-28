@@ -17,5 +17,6 @@ public enum InstanceStatus
     Created,
     Running,
     Stopped,
-    Error
+    Error,
+    ConfigurationChanged  // Indicates configuration has been updated but not yet reconciled
 }
