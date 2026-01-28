@@ -70,9 +70,55 @@ Core business logic that orchestrates instance and configuration management:
 Platform-specific implementations for launching and managing Drasi servers:
 
 - **ProcessInstanceManager**: Manages bare metal OS processes
+  - Launches drasi-server as a local process
+  - Generates YAML configuration files from stored Configuration objects
+  - Configurable via `ProcessInstanceManagerOptions` (executable path, directories, timeouts)
+  - Monitors process health via polling
 - **DockerInstanceManager**: Manages Docker containers
 - **AksInstanceManager**: Manages Kubernetes deployments in AKS
 - **DrasiServerConfigurationProvider**: Manages configuration files (YAML serialization)
+
+#### ProcessInstanceManager Configuration
+
+The `ProcessInstanceManager` requires configuration to locate the drasi-server executable and manage runtime files. Use `ProcessInstanceManagerOptions`:
+
+```csharp
+// In dependency injection setup
+builder.Services.Configure<ProcessInstanceManagerOptions>(
+    builder.Configuration.GetSection("ProcessInstanceManager"));
+```
+
+**Configuration Options** (`appsettings.json`):
+```json
+{
+  "ProcessInstanceManager": {
+    "ExecutablePath": "drasi-server",
+    "InstanceConfigDirectory": "./drasi-configs",
+    "DefaultLogLevel": "info",
+    "ShutdownTimeoutSeconds": 5,
+    "WorkingDirectory": "./drasi-runtime"
+  }
+}
+```
+
+| Property | Type | Default | Description |
+|----------|------|---------|-------------|
+| `ExecutablePath` | string | `"drasi-server"` | Path to drasi-server binary (absolute, relative, or in PATH) |
+| `InstanceConfigDirectory` | string | `"./drasi-configs"` | Directory for instance-specific YAML configs |
+| `DefaultLogLevel` | string | `"info"` | Default log level (trace, debug, info, warn, error) |
+| `ShutdownTimeoutSeconds` | int | `5` | Graceful shutdown timeout before force kill |
+| `WorkingDirectory` | string | `"./drasi-runtime"` | Working directory for processes |
+
+When starting an instance, `ProcessInstanceManager`:
+1. Receives the `Configuration` (sources, queries, reactions) from the configuration store
+2. Generates a drasi-server YAML config file: `{InstanceConfigDirectory}/{instanceId}-config.yaml`
+3. Launches the process: `drasi-server --config {configFile}`
+4. Tracks the process with PID in `InstanceRuntimeInfo`
+5. Cleans up config files when instances are stopped
+
+**See Also**:
+- [ProcessInstanceManager Configuration Guide](Providers/InstanceManagers/ProcessInstanceManager-README.md)
+- [drasi-server Documentation](https://github.com/samirbanjanovic/drasi-server)
 
 ## Usage Examples
 

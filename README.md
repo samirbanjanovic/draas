@@ -146,6 +146,62 @@ public Task<ServerConfiguration> AllocateResourcesAsync(IPortAllocator portAlloc
 }
 ```
 
+#### Process Platform Configuration
+
+`ProcessInstanceManager` launches drasi-server instances as local processes using YAML configuration. Configure in `appsettings.json`:
+
+```json
+{
+  "ProcessInstanceManager": {
+    "ExecutablePath": "drasi-server",
+    "InstanceConfigDirectory": "./drasi-configs",
+    "DefaultLogLevel": "info",
+    "ShutdownTimeoutSeconds": 5,
+    "WorkingDirectory": "./drasi-runtime"
+  }
+}
+```
+
+When creating an instance with `platformType: "Process"`, the system:
+
+1. Generates a drasi-server YAML config file from the stored `Configuration` (sources, queries, reactions)
+2. Saves it to `{InstanceConfigDirectory}/{instanceId}-config.yaml`
+3. Launches: `drasi-server --config {configFile}`
+4. Tracks the process with PID
+5. Monitors health and publishes status changes
+
+**Example Generated YAML**:
+```yaml
+id: my-instance
+host: 127.0.0.1
+port: 8080
+logLevel: info
+persistConfig: true
+persistIndex: false
+
+sources:
+  - kind: postgres
+    id: my-db
+    autoStart: true
+
+queries:
+  - id: my-query
+    query: |
+      MATCH (n) RETURN n
+    sources:
+      - sourceId: my-db
+
+reactions:
+  - kind: log
+    id: log-output
+    queries: [my-query]
+```
+
+See:
+- [ProcessInstanceManager Configuration Guide](src/DRaaS.Core/Providers/InstanceManagers/ProcessInstanceManager-README.md)
+- [Example YAML Configuration](src/DRaaS.ControlPlane/drasi-server-config-example.yaml)
+- [drasi-server Documentation](https://github.com/samirbanjanovic/drasi-server)
+
 ### 📊 Bidirectional Status Monitoring
 
 Two monitoring patterns based on platform architecture:
@@ -637,10 +693,221 @@ services.AddSingleton<IInstanceRuntimeStore, CosmosDbInstanceRuntimeStore>();
 
 ## Documentation
 
-- **[DRaaS.Core README](src/DRaaS.Core/README.md)** - Core architecture, usage examples, extensibility
-- **[DRaaS.ControlPlane README](src/DRaaS.ControlPlane/README.md)** - Web API documentation, endpoints, DTOs
-- **[Services Organization](src/DRaaS.Core/Services/README.md)** - Service layer structure, domains, dependencies
-- **[Distributed Monitoring](src/DRaaS.Core/DISTRIBUTED_MONITORING.md)** - Monitoring architecture, daemon examples, K8s deployment
+This repository contains comprehensive documentation organized by component. Below are abstracts of each guide with links for deep dives.
+
+### 📖 Documentation Structure
+
+```mermaid
+graph TB
+    Root[README.md<br/>Project Overview]
+
+    subgraph Core["DRaaS.Core Documentation"]
+        CoreReadme[Core/README.md<br/>Business Logic Library]
+        ServicesReadme[Core/Services/README.md<br/>Service Organization]
+        MonitoringDoc[Core/DISTRIBUTED_MONITORING.md<br/>Monitoring Architecture]
+        ProcessDoc[Core/.../ProcessInstanceManager-README.md<br/>Process Manager Config]
+    end
+
+    subgraph API["API Layer Documentation"]
+        APIReadme[ControlPlane/README.md<br/>REST API Guide]
+        YAMLExample[ControlPlane/drasi-server-config-example.yaml<br/>Config Template]
+    end
+
+    subgraph Reconciliation["Reconciliation Documentation"]
+        ReconcileReadme[Reconciliation/README.md<br/>Worker Service Architecture]
+    end
+
+    Root --> CoreReadme
+    Root --> APIReadme
+    Root --> ReconcileReadme
+
+    CoreReadme --> ServicesReadme
+    CoreReadme --> MonitoringDoc
+    CoreReadme --> ProcessDoc
+
+    APIReadme --> YAMLExample
+
+    style Root fill:#e1f5ff
+    style Core fill:#f0f0f0
+    style API fill:#fff4e1
+    style Reconciliation fill:#e8f8e8
+```
+
+---
+
+### 📘 Core Documentation
+
+#### [DRaaS.Core README](src/DRaaS.Core/README.md)
+**Business Logic Library Architecture**
+
+The Core library contains all domain models, services, and platform providers. This guide covers:
+- **Architecture Overview**: Models, Services, and Providers layers
+- **Usage Examples**: Console apps, desktop apps, Azure Functions
+- **Extensibility**: Custom storage implementations, new platform managers
+- **Design Principles**: Separation of concerns, dependency inversion, interface segregation
+- **Dependencies**: YamlDotNet, JsonPatch, .NET 10
+
+**Key Topics**: Domain models (DrasiInstance, Configuration), Service layer (Instance, Orchestration, Storage, Monitoring), Platform providers (Process, Docker, AKS)
+
+---
+
+#### [Services Organization Guide](src/DRaaS.Core/Services/README.md)
+**Service Layer Structure and Patterns**
+
+Explains the six service domains and their responsibilities:
+- **Instance Management**: Lifecycle operations (create, start, stop, delete)
+- **Storage**: Runtime state persistence (in-memory, Cosmos, SQL, Redis)
+- **Resource Allocation**: Port management and allocation
+- **Monitoring**: Status tracking and event publishing
+- **Orchestration**: Platform selection and resource coordination
+- **Factory**: Platform manager instantiation
+
+**Key Topics**: Domain boundaries, service dependencies, cross-cutting concerns, testing strategies
+
+---
+
+#### [Distributed Monitoring Architecture](src/DRaaS.Core/DISTRIBUTED_MONITORING.md)
+**Status Monitoring Patterns and Daemon Implementation**
+
+Comprehensive guide to the bidirectional monitoring system:
+- **Polling Pattern**: ProcessStatusMonitor for local processes (5s intervals)
+- **Push Pattern**: External daemons for Docker/AKS (event-driven)
+- **Status Event Bus**: IStatusUpdateService with centralized event publishing
+- **Daemon Implementation**: Complete Docker and Kubernetes daemon examples
+- **API Polling**: Reconciliation integration via `/api/status/recent-changes`
+
+**Key Topics**: Monitoring patterns, daemon architecture, Kubernetes deployment, status buffering, reconciliation polling
+
+---
+
+#### [ProcessInstanceManager Configuration](src/DRaaS.Core/Providers/InstanceManagers/ProcessInstanceManager-README.md)
+**Process Platform Configuration Guide**
+
+Detailed guide for configuring the Process instance manager:
+- **Configuration Options**: ExecutablePath, directories, timeouts, log levels
+- **YAML Generation**: How Configuration objects become drasi-server YAML
+- **Process Lifecycle**: Launch, monitoring, graceful shutdown, cleanup
+- **Prerequisites**: drasi-server binary, permissions, port availability
+- **Troubleshooting**: Common issues and solutions
+
+**Key Topics**: appsettings.json configuration, YAML structure, process management, file paths
+
+**Example Config**:
+```json
+{
+  "ProcessInstanceManager": {
+    "ExecutablePath": "drasi-server",
+    "InstanceConfigDirectory": "./drasi-configs",
+    "DefaultLogLevel": "info",
+    "ShutdownTimeoutSeconds": 5,
+    "WorkingDirectory": "./drasi-runtime"
+  }
+}
+```
+
+---
+
+### 🌐 API Documentation
+
+#### [DRaaS.ControlPlane README](src/DRaaS.ControlPlane/README.md)
+**REST API Frontend Layer**
+
+The Web API layer that exposes DRaaS.Core through HTTP endpoints:
+- **API Endpoints**: Instance management, configuration CRUD, status updates
+- **Architecture Flow**: Controller → Service → Provider sequence diagrams
+- **Request/Response Examples**: Complete API usage examples
+- **Dependency Injection**: Service registration and configuration
+- **OpenAPI Documentation**: Scalar and Swagger UI integration
+- **Error Handling**: HTTP status codes and error patterns
+- **Extending the API**: Adding controllers, DTOs, middleware
+
+**Key Topics**: REST endpoints, DTOs, controller patterns, JSON Patch, status polling endpoint
+
+**API Highlights**:
+- `POST /api/server/instances` - Create instance
+- `PATCH /api/configuration/instances/{id}` - Update configuration (JSON Patch)
+- `GET /api/status/recent-changes` - Poll status events (reconciliation)
+- `POST /api/status/updates` - Receive daemon updates
+
+---
+
+### 🔄 Reconciliation Documentation
+
+#### [DRaaS.Reconciliation README](src/DRaaS.Reconciliation/README.md)
+**Reconciliation Worker Service Architecture**
+
+Standalone worker service ensuring desired state convergence:
+- **Architecture**: BackgroundService with periodic + event-driven reconciliation
+- **Reconciliation Flow**: Detect drift → Apply strategy → Verify convergence
+- **Reconciliation Strategies**: Restart, configuration update, platform migration
+- **API-Driven Design**: All operations via ControlPlane HTTP API
+- **Configuration**: Polling intervals, retry policies, enabled strategies
+- **Status Polling**: Integration with `/api/status/recent-changes` endpoint
+
+**Key Topics**: Drift detection, reconciliation strategies, API client, configuration state store, periodic reconciliation
+
+**Key Features**:
+- **Periodic Reconciliation**: Scheduled full system checks (configurable interval)
+- **Event-Driven Reconciliation**: Immediate response to ConfigurationChanged events via API polling
+- **Strategy Pattern**: Pluggable reconciliation strategies (Restart, Update, Migrate)
+- **API-First**: 100% ControlPlane API driven (no direct Core dependencies)
+
+---
+
+### 📋 Example Configurations
+
+#### [drasi-server YAML Example](src/DRaaS.ControlPlane/drasi-server-config-example.yaml)
+**Generated Configuration Template**
+
+Example of the YAML configuration that ProcessInstanceManager generates:
+- **Server Settings**: id, host, port, logLevel, persistence
+- **Sources**: PostgreSQL, mock, HTTP, gRPC examples
+- **Queries**: Cypher queries with source subscriptions
+- **Reactions**: Log, HTTP webhook, SSE streaming examples
+
+This file demonstrates the complete structure and all available options for drasi-server configuration.
+
+---
+
+### 🗂️ Documentation Index
+
+Quick reference to all documentation files:
+
+| Document | Location | Purpose |
+|----------|----------|---------|
+| **Main README** | [README.md](README.md) | Project overview, architecture, getting started |
+| **Core Library** | [DRaaS.Core/README.md](src/DRaaS.Core/README.md) | Business logic architecture, usage examples |
+| **Service Layer** | [DRaaS.Core/Services/README.md](src/DRaaS.Core/Services/README.md) | Service organization and patterns |
+| **Monitoring** | [DRaaS.Core/DISTRIBUTED_MONITORING.md](src/DRaaS.Core/DISTRIBUTED_MONITORING.md) | Status monitoring architecture |
+| **Process Manager** | [DRaaS.Core/Providers/InstanceManagers/ProcessInstanceManager-README.md](src/DRaaS.Core/Providers/InstanceManagers/ProcessInstanceManager-README.md) | Process platform configuration |
+| **ControlPlane API** | [DRaaS.ControlPlane/README.md](src/DRaaS.ControlPlane/README.md) | REST API documentation |
+| **Reconciliation** | [DRaaS.Reconciliation/README.md](src/DRaaS.Reconciliation/README.md) | Reconciliation worker service |
+| **YAML Example** | [drasi-server-config-example.yaml](src/DRaaS.ControlPlane/drasi-server-config-example.yaml) | Generated configuration template |
+
+---
+
+### 📚 Documentation Navigation Guide
+
+**New to DRaaS?** Start here:
+1. Read this README for overall architecture
+2. Explore [DRaaS.Core README](src/DRaaS.Core/README.md) for business logic concepts
+3. Check [DRaaS.ControlPlane README](src/DRaaS.ControlPlane/README.md) for API usage
+
+**Implementing a platform manager?**
+1. [DRaaS.Core README](src/DRaaS.Core/README.md) - Platform manager interface
+2. [ProcessInstanceManager Configuration](src/DRaaS.Core/Providers/InstanceManagers/ProcessInstanceManager-README.md) - Reference implementation
+
+**Setting up monitoring?**
+1. [Distributed Monitoring](src/DRaaS.Core/DISTRIBUTED_MONITORING.md) - Complete monitoring guide
+2. [Services Organization](src/DRaaS.Core/Services/README.md) - Monitoring service details
+
+**Building a custom interface?**
+1. [DRaaS.Core README](src/DRaaS.Core/README.md) - Library usage examples
+2. [DRaaS.ControlPlane README](src/DRaaS.ControlPlane/README.md) - Reference implementation
+
+**Understanding reconciliation?**
+1. [DRaaS.Reconciliation README](src/DRaaS.Reconciliation/README.md) - Reconciliation architecture
+2. [Distributed Monitoring](src/DRaaS.Core/DISTRIBUTED_MONITORING.md) - Status polling integration
 
 ## Contributing
 

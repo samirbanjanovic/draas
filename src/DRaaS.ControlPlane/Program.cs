@@ -47,6 +47,10 @@ public class Program
         // Register instance service
         builder.Services.AddSingleton<IDrasiInstanceService, DrasiInstanceService>();
 
+        // Configure ProcessInstanceManager options
+        builder.Services.Configure<ProcessInstanceManagerOptions>(
+            builder.Configuration.GetSection("ProcessInstanceManager"));
+
         // Register instance managers (they all inject the shared runtime store)
         builder.Services.AddSingleton<IDrasiServerInstanceManager, DockerInstanceManager>();
         builder.Services.AddSingleton<IDrasiServerInstanceManager, AksInstanceManager>();

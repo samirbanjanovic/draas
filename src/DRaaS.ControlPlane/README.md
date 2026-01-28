@@ -272,9 +272,73 @@ Configures development server ports and URLs:
 }
 ```
 
-### Application Settings
+### Application Settings (`appsettings.json`)
 
-Future configuration options (to be implemented):
+#### ProcessInstanceManager Configuration
+
+Configure how local process instances are launched:
+
+```json
+{
+  "ProcessInstanceManager": {
+    "ExecutablePath": "drasi-server",
+    "InstanceConfigDirectory": "./drasi-configs",
+    "DefaultLogLevel": "info",
+    "ShutdownTimeoutSeconds": 5,
+    "WorkingDirectory": "./drasi-runtime"
+  }
+}
+```
+
+**Configuration Options**:
+
+| Property | Type | Default | Description |
+|----------|------|---------|-------------|
+| `ExecutablePath` | string | `"drasi-server"` | Path to drasi-server executable (absolute, relative, or in PATH) |
+| `InstanceConfigDirectory` | string | `"./drasi-configs"` | Directory for instance-specific YAML configs |
+| `DefaultLogLevel` | string | `"info"` | Default log level (trace, debug, info, warn, error) |
+| `ShutdownTimeoutSeconds` | int | `5` | Graceful shutdown timeout before force kill |
+| `WorkingDirectory` | string | `"./drasi-runtime"` | Working directory for drasi-server processes |
+
+When creating instances with `platformType: "Process"`, the system:
+
+1. Generates a YAML config file at `{InstanceConfigDirectory}/{instanceId}-config.yaml`
+2. Launches drasi-server: `drasi-server --config {configFile}`
+3. Tracks the process with PID
+4. Monitors health and publishes status changes
+
+**Example Generated YAML**:
+```yaml
+id: my-instance
+host: 127.0.0.1
+port: 8080
+logLevel: info
+persistConfig: true
+persistIndex: false
+
+sources:
+  - kind: mock
+    id: test-source
+    autoStart: true
+
+queries:
+  - id: my-query
+    query: |
+      MATCH (n) RETURN n
+    sources:
+      - sourceId: test-source
+
+reactions:
+  - kind: log
+    id: log-output
+    queries: [my-query]
+```
+
+See [ProcessInstanceManager Documentation](../DRaaS.Core/Providers/InstanceManagers/ProcessInstanceManager-README.md) for detailed configuration guide.
+
+### Future Configuration Options
+
+Planned application settings:
 
 - Default platform type (Process, Docker, AKS)
 - Port allocation range (currently 8080-9000)

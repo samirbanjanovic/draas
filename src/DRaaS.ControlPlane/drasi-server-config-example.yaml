@@ -1,0 +1,71 @@
+# Example drasi-server configuration template
+# This file shows the structure that ProcessInstanceManager will generate
+# for each instance based on the Configuration stored in DRaaS
+
+# Instance identifier (auto-generated per instance)
+id: example-instance
+
+# Server binding configuration
+host: 0.0.0.0
+port: 8080
+logLevel: info
+
+# Persistence settings
+persistConfig: true
+persistIndex: false
+
+# Data sources configuration
+# Each source connects to a data system and streams changes
+sources:
+  - kind: postgres
+    id: my-postgres
+    autoStart: true
+    host: localhost
+    port: 5432
+    database: mydb
+    user: postgres
+    password: ${DB_PASSWORD}
+    tables: [orders, customers]
+    slotName: drasi_slot
+    publicationName: drasi_pub
+    
+  - kind: mock
+    id: test-source
+    autoStart: true
+    dataType: sensor
+    intervalMs: 5000
+
+# Continuous queries
+# Queries run perpetually and maintain current results
+queries:
+  - id: active-orders
+    query: |
+      MATCH (o:Order)
+      WHERE o.status = 'active'
+      RETURN o.id, o.customer_id, o.total
+    sources:
+      - sourceId: my-postgres
+      
+  - id: sensor-threshold
+    query: |
+      MATCH (s:Sensor)
+      WHERE s.value > s.threshold
+      RETURN s.id, s.value
+    sources:
+      - sourceId: test-source
+
+# Reactions respond to query result changes
+reactions:
+  - kind: log
+    id: log-output
+    queries: [active-orders, sensor-threshold]
+    
+  - kind: http
+    id: webhook
+    queries: [sensor-threshold]
+    baseUrl: https://api.example.com
+    routes:
+      sensor-threshold:
+        added:
+          url: /alerts
+          method: POST

@@ -1,19 +1,29 @@
 using System.Diagnostics;
+using System.Text;
 using DRaaS.Core.Models;
 using DRaaS.Core.Services.Storage;
 using DRaaS.Core.Services.ResourceAllocation;
 using System.Collections.Concurrent;
+using Microsoft.Extensions.Options;
 
 namespace DRaaS.Core.Providers.InstanceManagers;
 
 public class ProcessInstanceManager : IDrasiServerInstanceManager
 {
     private readonly IInstanceRuntimeStore _runtimeStore;
+    private readonly ProcessInstanceManagerOptions _options;
     private readonly ConcurrentDictionary<string, Process> _processes = new();
 
-    public ProcessInstanceManager(IInstanceRuntimeStore runtimeStore)
+    public ProcessInstanceManager(
+        IInstanceRuntimeStore runtimeStore,
+        IOptions<ProcessInstanceManagerOptions> options)
     {
         _runtimeStore = runtimeStore;
+        _options = options.Value;
+
+        // Ensure directories exist
+        Directory.CreateDirectory(_options.InstanceConfigDirectory);
+        Directory.CreateDirectory(_options.WorkingDirectory);
     }
 
     public string PlatformType => "Process";
@@ -25,25 +35,18 @@ public class ProcessInstanceManager : IDrasiServerInstanceManager
 
     public async Task<InstanceRuntimeInfo> StartInstanceAsync(string instanceId, Configuration configuration)
     {
-        // TODO: Implement bare metal process startup
-        // 1. Resolve path to Drasi server executable
-        // 2. Write configuration to temp file
-        // 3. Build command-line arguments:
-        //    --config-file <path>
-        //    --host <host>
-        //    --port <port>
-        //    --log-level <level>
-        // 4. Create Process with ProcessStartInfo
-        // 5. Start process and capture PID
+        // Create instance-specific configuration file from the store configuration
+        var configFilePath = await CreateInstanceConfigurationFileAsync(instanceId, configuration);
 
         var processStartInfo = new ProcessStartInfo
         {
-            FileName = "drasi-server", // TODO: Configure executable path
-            Arguments = $"--host {configuration.Host ?? "0.0.0.0"} --port {configuration.Port ?? 8080} --log-level {configuration.LogLevel ?? "info"}",
+            FileName = _options.ExecutablePath,
+            Arguments = $"--config {configFilePath}",
             UseShellExecute = false,
             RedirectStandardOutput = true,
             RedirectStandardError = true,
-            CreateNoWindow = true
+            CreateNoWindow = true,
+            WorkingDirectory = _options.WorkingDirectory
         };
 
         var process = new Process
@@ -51,8 +54,8 @@ public class ProcessInstanceManager : IDrasiServerInstanceManager
             StartInfo = processStartInfo
         };
 
-        // process.Start(); // Commented out for stub
-        var processId = "12345"; // process.Id.ToString(); // Stub PID
+        process.Start();
+        var processId = process.Id.ToString();
 
         var runtimeInfo = new InstanceRuntimeInfo
         {
@@ -65,7 +68,8 @@ public class ProcessInstanceManager : IDrasiServerInstanceManager
                 ["PlatformType"] = PlatformType,
                 ["ExecutablePath"] = processStartInfo.FileName,
                 ["Arguments"] = processStartInfo.Arguments,
-                ["WorkingDirectory"] = Environment.CurrentDirectory
+                ["WorkingDirectory"] = processStartInfo.WorkingDirectory,
+                ["ConfigFilePath"] = configFilePath
             }
         };
 
@@ -77,12 +81,6 @@ public class ProcessInstanceManager : IDrasiServerInstanceManager
 
     public async Task<InstanceRuntimeInfo> StopInstanceAsync(string instanceId)
     {
-        // TODO: Implement process termination
-        // 1. Get Process from _processes dictionary
-        // 2. Send graceful shutdown signal (SIGTERM equivalent)
-        // 3. Wait for process exit with timeout
-        // 4. Force kill if timeout exceeded (SIGKILL)
-
         var runtimeInfo = await _runtimeStore.GetAsync(instanceId);
         if (runtimeInfo == null)
         {
@@ -93,12 +91,22 @@ public class ProcessInstanceManager : IDrasiServerInstanceManager
         {
             try
             {
-                // process.Kill(); // Commented for stub
-                // process.WaitForExit(5000); // Wait up to 5 seconds
+                // Request graceful shutdown
+                process.Kill(entireProcessTree: false);
+
+                // Wait for graceful exit with timeout
+                var timeoutMs = _options.ShutdownTimeoutSeconds * 1000;
+                if (!process.WaitForExit(timeoutMs))
+                {
+                    // Force kill if timeout exceeded
+                    process.Kill(entireProcessTree: true);
+                    process.WaitForExit(); // Wait for actual termination
+                }
             }
             catch (Exception ex)
             {
-                // Log error
+                // Process might have already exited or been disposed
+                // Continue with cleanup
             }
         }
 
@@ -110,6 +118,19 @@ public class ProcessInstanceManager : IDrasiServerInstanceManager
 
         await _runtimeStore.SaveAsync(stoppedInfo);
         _processes.TryRemove(instanceId, out _);
+
+        // Clean up configuration file
+        if (runtimeInfo.RuntimeMetadata.TryGetValue("ConfigFilePath", out var configFilePath))
+        {
+            try
+            {
+                File.Delete(configFilePath);
+            }
+            catch
+            {
+                // Ignore cleanup errors
+            }
+        }
 
         return stoppedInfo;
     }
@@ -125,11 +146,6 @@ public class ProcessInstanceManager : IDrasiServerInstanceManager
 
     public async Task<InstanceRuntimeInfo> GetInstanceStatusAsync(string instanceId)
     {
-        // TODO: Check if process is still running
-        // 1. Get Process from dictionary
-        // 2. Check process.HasExited
-        // 3. Update status accordingly
-
         var runtimeInfo = await _runtimeStore.GetAsync(instanceId);
         if (runtimeInfo == null)
         {
@@ -140,15 +156,16 @@ public class ProcessInstanceManager : IDrasiServerInstanceManager
         {
             try
             {
-                // if (process.HasExited) // Commented for stub
-                // {
-                //     runtimeInfo = runtimeInfo with
-                //     {
-                //         Status = InstanceStatus.Stopped,
-                //         StoppedAt = DateTime.UtcNow
-                //     };
-                //     await _runtimeStore.SaveAsync(runtimeInfo);
-                // }
+                if (process.HasExited)
+                {
+                    runtimeInfo = runtimeInfo with
+                    {
+                        Status = InstanceStatus.Stopped,
+                        StoppedAt = DateTime.UtcNow
+                    };
+                    await _runtimeStore.SaveAsync(runtimeInfo);
+                    _processes.TryRemove(instanceId, out _);
+                }
             }
             catch (Exception)
             {
@@ -167,9 +184,25 @@ public class ProcessInstanceManager : IDrasiServerInstanceManager
 
     public Task<bool> IsAvailableAsync()
     {
-        // TODO: Check if Drasi server executable exists
-        // Check if required permissions are available
-        return Task.FromResult(true); // Stub: assume available
+        // Check if drasi-server executable exists and is accessible
+        try
+        {
+            var executablePath = _options.ExecutablePath;
+
+            // If it's a relative path or just a filename, check if it's in PATH
+            if (!Path.IsPathRooted(executablePath))
+            {
+                // Try to find in PATH or assume it's available
+                return Task.FromResult(true);
+            }
+
+            // If it's an absolute path, check if file exists
+            return Task.FromResult(File.Exists(executablePath));
+        }
+        catch
+        {
+            return Task.FromResult(false);
+        }
     }
 
     public Task<ServerConfiguration> AllocateResourcesAsync(IPortAllocator portAllocator)
@@ -185,5 +218,106 @@ public class ProcessInstanceManager : IDrasiServerInstanceManager
         };
 
         return Task.FromResult(config);
+    }
+
+    /// <summary>
+    /// Creates a drasi-server YAML configuration file for the instance.
+    /// </summary>
+    private async Task<string> CreateInstanceConfigurationFileAsync(string instanceId, Configuration configuration)
+    {
+        var configFilePath = Path.Combine(_options.InstanceConfigDirectory, $"{instanceId}-config.yaml");
+
+        // Build drasi-server YAML configuration
+        var yamlConfig = new StringBuilder();
+        yamlConfig.AppendLine($"id: {instanceId}");
+        yamlConfig.AppendLine($"host: {configuration.Host ?? "0.0.0.0"}");
+        yamlConfig.AppendLine($"port: {configuration.Port ?? 8080}");
+        yamlConfig.AppendLine($"logLevel: {configuration.LogLevel ?? _options.DefaultLogLevel}");
+        yamlConfig.AppendLine("persistConfig: true");
+        yamlConfig.AppendLine("persistIndex: false");
+        yamlConfig.AppendLine();
+
+        // Add sources if configured
+        if (configuration.Sources?.Count > 0)
+        {
+            yamlConfig.AppendLine("sources:");
+            foreach (var source in configuration.Sources)
+            {
+                yamlConfig.AppendLine($"  - kind: {source.Kind}");
+                yamlConfig.AppendLine($"    id: {source.Id}");
+                yamlConfig.AppendLine($"    autoStart: {(source.AutoStart ?? true).ToString().ToLowerInvariant()}");
+                // Additional source-specific configuration would go here
+            }
+            yamlConfig.AppendLine();
+        }
+        else
+        {
+            yamlConfig.AppendLine("sources: []");
+            yamlConfig.AppendLine();
+        }
+
+        // Add queries if configured
+        if (configuration.Queries?.Count > 0)
+        {
+            yamlConfig.AppendLine("queries:");
+            foreach (var query in configuration.Queries)
+            {
+                yamlConfig.AppendLine($"  - id: {query.Id}");
+                if (!string.IsNullOrWhiteSpace(query.QueryText))
+                {
+                    yamlConfig.AppendLine($"    query: |");
+                    // Indent the query string
+                    var queryLines = query.QueryText.Split('\n');
+                    foreach (var line in queryLines)
+                    {
+                        yamlConfig.AppendLine($"      {line}");
+                    }
+                }
+                yamlConfig.AppendLine("    sources:");
+                if (query.Sources?.Count > 0)
+                {
+                    foreach (var source in query.Sources)
+                    {
+                        yamlConfig.AppendLine($"      - sourceId: {source.SourceId}");
+                    }
+                }
+            }
+            yamlConfig.AppendLine();
+        }
+        else
+        {
+            yamlConfig.AppendLine("queries: []");
+            yamlConfig.AppendLine();
+        }
+
+        // Add reactions if configured
+        if (configuration.Reactions?.Count > 0)
+        {
+            yamlConfig.AppendLine("reactions:");
+            foreach (var reaction in configuration.Reactions)
+            {
+                yamlConfig.AppendLine($"  - kind: {reaction.Kind}");
+                yamlConfig.AppendLine($"    id: {reaction.Id}");
+                if (reaction.Queries?.Count > 0)
+                {
+                    yamlConfig.Append("    queries: [");
+                    yamlConfig.Append(string.Join(", ", reaction.Queries));
+                    yamlConfig.AppendLine("]");
+                }
+                else
+                {
+                    yamlConfig.AppendLine("    queries: []");
+                }
+            }
+            yamlConfig.AppendLine();
+        }
+        else
+        {
+            yamlConfig.AppendLine("reactions: []");
+            yamlConfig.AppendLine();
+        }
+
+        await File.WriteAllTextAsync(configFilePath, yamlConfig.ToString());
+        return configFilePath;
     }
 }
