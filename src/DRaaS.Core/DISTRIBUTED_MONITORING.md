@@ -5,52 +5,64 @@
 DRaaS supports **bidirectional status management** with two distinct patterns:
 
 1. **Local Polling (Process)**: Control plane actively polls process status
-2. **Push-Based (Docker/AKS)**: External daemons push status updates to control plane
+2. **Push-Based (Docker/AKS)**: External daemons push status updates to control plane API
 
 ## Architecture Diagram
 
+```mermaid
+graph TB
+    subgraph ControlPlane["DRaaS Control Plane"]
+        SUS[StatusUpdateService<br/>Status Bus]
+        PM[ProcessStatusMonitor<br/>Polling: 5s intervals]
+        SC[StatusController<br/>POST /api/status/updates]
+        Buffer[Status Change Buffer<br/>Last 1000 changes]
+        API[Status API<br/>GET /recent-changes]
+
+        PM -->|Local Polling| SUS
+        SC -->|External Push| SUS
+        SUS --> Buffer
+        Buffer --> API
+    end
+
+    subgraph Reconciliation["DRaaS Reconciliation"]
+        RecSvc[ReconciliationBackgroundService]
+        RecSvc -->|Poll Events| API
+    end
+
+    subgraph Processes["Local Processes"]
+        P1[Drasi Process 1]
+        P2[Drasi Process 2]
+        PM -.->|Check HasExited| P1
+        PM -.->|Check HasExited| P2
+    end
+
+    subgraph DockerDaemon["Docker Daemon"]
+        DD[Docker Monitor]
+        DE[Docker Engine]
+        DD -->|Watch Events| DE
+        DD -->|HTTP POST| SC
+    end
+
+    subgraph AKSDaemon["AKS Daemon"]
+        AD[AKS Monitor]
+        K8S[Kubernetes API]
+        AD -->|Watch Events| K8S
+        AD -->|HTTP POST| SC
+    end
+
+    style ControlPlane fill:#fff4e1
+    style Reconciliation fill:#e1f5ff
+    style Processes fill:#f0f0f0
+    style DockerDaemon fill:#e8f4f8
+    style AKSDaemon fill:#f8e8f4
 ```
-┌─────────────────────────────────────────────────────────────┐
-│                    DRaaS Control Plane                       │
-│                                                              │
-│  ┌──────────────────────────────────────────────────────┐   │
-│  │         IStatusUpdateService (Status Bus)             │   │
-│  │  - Receives updates from monitors and daemons        │   │
-│  │  - Publishes StatusChanged events                     │   │
-│  │  - Updates IInstanceRuntimeStore                      │   │
-│  └──────────────────────────────────────────────────────┘   │
-│           ▲                                  ▲               │
-│           │                                  │               │
-│    ┌──────┴──────────┐            ┌─────────┴──────────┐    │
-│    │ ProcessMonitor  │            │ StatusController   │    │
-│    │  (Polling)      │            │   (Push API)       │    │
-│    │  5s intervals   │            │  POST /status      │    │
-│    └─────────────────┘            └────────────────────┘    │
-│                                            ▲                 │
-└────────────────────────────────────────────┼─────────────────┘
-                                             │
-                 ┌───────────────────────────┴──────────────────────────┐
-                 │                                                       │
-         ┌───────▼────────┐                               ┌─────────▼──────────┐
-         │ Docker Daemon  │                               │   AKS Daemon       │
-         │                │                               │                    │
-         │ - Monitors     │                               │ - Monitors K8s     │
-         │   containers   │                               │   pods/deployments │
-         │ - Posts to     │                               │ - Posts to         │
-         │   Control      │                               │   Control Plane    │
-         │   Plane API    │                               │   API              │
-         └────────────────┘                               └────────────────────┘
-                 │                                                  │
-         Watches Docker Events                            Watches K8s Events
-                 │                                                  │
-         ┌───────▼────────┐                               ┌────────▼──────────┐
-         │ Docker Engine  │                               │  Kubernetes API   │
-         │                │                               │                   │
-         │ - Containers   │                               │ - Pods            │
-         │ - Networks     │                               │ - Services        │
-         │ - Volumes      │                               │ - Deployments     │
-         └────────────────┘                               └───────────────────┘
-```
+
+**Status Flow**:
+1. **Local Processes**: `ProcessStatusMonitor` polls every 5s → `StatusUpdateService`
+2. **Docker Containers**: Docker daemon watches events → POST `/api/status/updates` → `StatusController` → `StatusUpdateService`
+3. **AKS Pods**: AKS daemon watches K8s events → POST `/api/status/updates` → `StatusController` → `StatusUpdateService`
+4. **Status Buffer**: `StatusUpdateService` maintains rolling buffer of last 1000 changes
+5. **Reconciliation**: Polls GET `/api/status/recent-changes` for configuration changes
 
 ## Process Monitoring (Polling)
 

@@ -1,4 +1,5 @@
 using DRaaS.Core.Models;
+using DRaaS.Core.Services.Monitoring;
 using Microsoft.AspNetCore.JsonPatch;
 using System.Net.Http.Json;
 using System.Text.Json;
@@ -209,6 +210,31 @@ public class ReconciliationApiClient : IReconciliationApiClient
         {
             _logger.LogError(ex, "Error updating configuration for instance {InstanceId}", instanceId);
             return false;
+        }
+    }
+
+    public async Task<IEnumerable<StatusChangeRecord>> GetRecentStatusChangesAsync(
+        DateTime since,
+        InstanceStatus? statusFilter = null)
+    {
+        try
+        {
+            var url = $"/api/status/recent-changes?since={since:O}";
+            if (statusFilter.HasValue)
+            {
+                url += $"&statusFilter={statusFilter.Value}";
+            }
+
+            var response = await _httpClient.GetAsync(url);
+            response.EnsureSuccessStatusCode();
+
+            var changes = await response.Content.ReadFromJsonAsync<IEnumerable<StatusChangeRecord>>(_jsonOptions);
+            return changes ?? [];
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to get recent status changes from ControlPlane");
+            return [];
         }
     }
 }

@@ -1,4 +1,3 @@
-using DRaaS.Core.Services.Monitoring;
 using DRaaS.Core.Services.Reconciliation;
 using DRaaS.Reconciliation;
 using DRaaS.Reconciliation.Strategies;
@@ -17,10 +16,7 @@ builder.Services.AddHttpClient<IReconciliationApiClient, ReconciliationApiClient
     client.Timeout = TimeSpan.FromMinutes(5);
 });
 
-// Status update service (for event-driven reconciliation)
-builder.Services.AddSingleton<IStatusUpdateService, StatusUpdateService>();
-
-// Reconciliation services
+// Reconciliation services (no direct Core dependencies)
 builder.Services.AddSingleton<IConfigurationStateStore, ConfigurationStateStore>();
 builder.Services.AddSingleton<IReconciliationStrategy, RestartReconciliationStrategy>();
 builder.Services.AddSingleton<IReconciliationService, ReconciliationService>();

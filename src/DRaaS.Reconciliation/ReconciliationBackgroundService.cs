@@ -1,4 +1,4 @@
-using DRaaS.Core.Services.Monitoring;
+using DRaaS.Core.Models;
 using DRaaS.Core.Services.Reconciliation;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
@@ -7,23 +7,25 @@ using Microsoft.Extensions.Options;
 namespace DRaaS.Reconciliation;
 
 /// <summary>
-/// Background service that runs periodic reconciliation loops and responds to configuration change events.
+/// Background service that runs periodic reconciliation loops and polls for configuration change events.
+/// All operations are performed through ControlPlane API (no direct Core dependencies).
 /// </summary>
 public class ReconciliationBackgroundService : BackgroundService
 {
     private readonly IReconciliationService _reconciliationService;
-    private readonly IStatusUpdateService _statusUpdateService;
+    private readonly IReconciliationApiClient _apiClient;
     private readonly ReconciliationOptions _options;
     private readonly ILogger<ReconciliationBackgroundService> _logger;
+    private DateTime _lastEventPoll = DateTime.UtcNow;
 
     public ReconciliationBackgroundService(
         IReconciliationService reconciliationService,
-        IStatusUpdateService statusUpdateService,
+        IReconciliationApiClient apiClient,
         IOptions<ReconciliationOptions> options,
         ILogger<ReconciliationBackgroundService> logger)
     {
         _reconciliationService = reconciliationService;
-        _statusUpdateService = statusUpdateService;
+        _apiClient = apiClient;
         _options = options.Value;
         _logger = logger;
     }
@@ -32,11 +34,9 @@ public class ReconciliationBackgroundService : BackgroundService
     {
         _logger.LogInformation("Reconciliation Background Service starting...");
 
-        // Subscribe to configuration change events if enabled
         if (_options.EnableEventDrivenReconciliation)
         {
-            _statusUpdateService.StatusChanged += OnStatusChanged;
-            _logger.LogInformation("Event-driven reconciliation enabled");
+            _logger.LogInformation("Event-driven reconciliation enabled (API polling mode)");
         }
 
         // Run periodic reconciliation if enabled
@@ -69,6 +69,13 @@ public class ReconciliationBackgroundService : BackgroundService
 
                 try
                 {
+                    // Poll for configuration change events if enabled
+                    if (_options.EnableEventDrivenReconciliation)
+                    {
+                        await PollForStatusChangesAsync(stoppingToken);
+                    }
+
+                    // Run full reconciliation cycle
                     var results = await _reconciliationService.ReconcileAllInstancesAsync(stoppingToken);
 
                     var driftCount = results.Count(r => r.HasDrift);
@@ -94,62 +101,67 @@ public class ReconciliationBackgroundService : BackgroundService
         }
     }
 
-    private async void OnStatusChanged(object? sender, StatusUpdateEventArgs e)
+    private async Task PollForStatusChangesAsync(CancellationToken cancellationToken)
     {
-        // Only react to configuration changes
-        if (e.NewStatus != Core.Models.InstanceStatus.ConfigurationChanged)
-        {
-            return;
-        }
-
-        _logger.LogInformation(
-            "Configuration change detected for instance {InstanceId}, triggering reconciliation",
-            e.InstanceId);
-
         try
         {
-            var result = await _reconciliationService.ReconcileInstanceAsync(e.InstanceId);
+            // Get status changes since last poll (ConfigurationChanged only)
+            var changes = await _apiClient.GetRecentStatusChangesAsync(
+                _lastEventPoll,
+                InstanceStatus.ConfigurationChanged);
 
-            if (result.ReconciliationAttempted && result.ReconciliationSuccessful == true)
+            foreach (var change in changes)
             {
                 _logger.LogInformation(
-                    "Successfully reconciled instance {InstanceId} using {Strategy}",
-                    e.InstanceId,
-                    result.StrategyUsed);
+                    "Configuration change detected for instance {InstanceId}, triggering reconciliation",
+                    change.InstanceId);
+
+                try
+                {
+                    var result = await _reconciliationService.ReconcileInstanceAsync(change.InstanceId, cancellationToken);
+
+                    if (result.ReconciliationAttempted && result.ReconciliationSuccessful == true)
+                    {
+                        _logger.LogInformation(
+                            "Successfully reconciled instance {InstanceId} using {Strategy}",
+                            change.InstanceId,
+                            result.StrategyUsed);
+                    }
+                    else if (result.ReconciliationAttempted && result.ReconciliationSuccessful == false)
+                    {
+                        _logger.LogWarning(
+                            "Failed to reconcile instance {InstanceId}: {Error}",
+                            change.InstanceId,
+                            result.ErrorMessage);
+                    }
+                    else
+                    {
+                        _logger.LogDebug(
+                            "No drift detected for instance {InstanceId}",
+                            change.InstanceId);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(
+                        ex,
+                        "Error during event-driven reconciliation for instance {InstanceId}",
+                        change.InstanceId);
+                }
             }
-            else if (result.ReconciliationAttempted && result.ReconciliationSuccessful == false)
-            {
-                _logger.LogWarning(
-                    "Failed to reconcile instance {InstanceId}: {Error}",
-                    e.InstanceId,
-                    result.ErrorMessage);
-            }
-            else
-            {
-                _logger.LogDebug(
-                    "No drift detected for instance {InstanceId}",
-                    e.InstanceId);
-            }
+
+            // Update last poll timestamp
+            _lastEventPoll = DateTime.UtcNow;
         }
         catch (Exception ex)
         {
-            _logger.LogError(
-                ex,
-                "Error during event-driven reconciliation for instance {InstanceId}",
-                e.InstanceId);
+            _logger.LogError(ex, "Error polling for status changes from ControlPlane");
         }
     }
 
     public override Task StopAsync(CancellationToken cancellationToken)
     {
         _logger.LogInformation("Reconciliation Background Service stopping...");
-
-        // Unsubscribe from events
-        if (_options.EnableEventDrivenReconciliation)
-        {
-            _statusUpdateService.StatusChanged -= OnStatusChanged;
-        }
-
         return base.StopAsync(cancellationToken);
     }
 }

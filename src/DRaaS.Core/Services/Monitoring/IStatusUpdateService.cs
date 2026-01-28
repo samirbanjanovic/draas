@@ -30,12 +30,34 @@ public interface IStatusUpdateService
     /// <param name="instanceId">The instance identifier</param>
     /// <returns>The runtime information, or null if not found</returns>
     Task<InstanceRuntimeInfo?> GetLastKnownStatusAsync(string instanceId);
+
+    /// <summary>
+    /// Gets recent status changes since a specific timestamp.
+    /// Useful for API polling-based reconciliation.
+    /// </summary>
+    /// <param name="since">Get changes since this timestamp</param>
+    /// <param name="statusFilter">Optional filter for specific status (e.g., ConfigurationChanged)</param>
+    /// <returns>List of status change events</returns>
+    Task<IEnumerable<StatusChangeRecord>> GetRecentChangesAsync(DateTime since, InstanceStatus? statusFilter = null);
 }
 
 /// <summary>
 /// Event arguments for status change events.
 /// </summary>
 public class StatusUpdateEventArgs : EventArgs
+{
+    public string InstanceId { get; init; } = string.Empty;
+    public InstanceStatus OldStatus { get; init; }
+    public InstanceStatus NewStatus { get; init; }
+    public string Source { get; init; } = string.Empty;
+    public DateTime Timestamp { get; init; }
+    public Dictionary<string, string> Metadata { get; init; } = new();
+}
+
+/// <summary>
+/// Record of a status change for API polling.
+/// </summary>
+public record StatusChangeRecord
 {
     public string InstanceId { get; init; } = string.Empty;
     public InstanceStatus OldStatus { get; init; }

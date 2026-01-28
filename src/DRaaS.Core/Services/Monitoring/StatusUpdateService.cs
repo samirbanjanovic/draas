@@ -1,15 +1,19 @@
 using DRaaS.Core.Models;
 using DRaaS.Core.Services.Storage;
+using System.Collections.Concurrent;
 
 namespace DRaaS.Core.Services.Monitoring;
 
 /// <summary>
 /// Centralized status update service that acts as a message bus for instance status changes.
 /// Receives updates from both local monitors (polling) and external daemons (push).
+/// Maintains a rolling buffer of recent status changes for API polling.
 /// </summary>
 public class StatusUpdateService : IStatusUpdateService
 {
     private readonly IInstanceRuntimeStore _runtimeStore;
+    private readonly ConcurrentQueue<StatusChangeRecord> _recentChanges = new();
+    private const int MaxRecentChanges = 1000; // Keep last 1000 changes
 
     public StatusUpdateService(IInstanceRuntimeStore runtimeStore)
     {
@@ -37,11 +41,13 @@ public class StatusUpdateService : IStatusUpdateService
         // Only update if status actually changed
         if (oldStatus != newStatus)
         {
+            var timestamp = DateTime.UtcNow;
+
             // Update runtime store with new status
             var updatedInfo = currentInfo with
             {
                 Status = newStatus,
-                StoppedAt = newStatus == InstanceStatus.Stopped ? DateTime.UtcNow : currentInfo.StoppedAt
+                StoppedAt = newStatus == InstanceStatus.Stopped ? timestamp : currentInfo.StoppedAt
             };
 
             // Merge metadata if provided
@@ -55,6 +61,25 @@ public class StatusUpdateService : IStatusUpdateService
 
             await _runtimeStore.SaveAsync(updatedInfo);
 
+            // Add to recent changes buffer for API polling
+            var changeRecord = new StatusChangeRecord
+            {
+                InstanceId = instanceId,
+                OldStatus = oldStatus,
+                NewStatus = newStatus,
+                Source = source,
+                Timestamp = timestamp,
+                Metadata = metadata ?? new Dictionary<string, string>()
+            };
+
+            _recentChanges.Enqueue(changeRecord);
+
+            // Trim buffer if too large
+            while (_recentChanges.Count > MaxRecentChanges)
+            {
+                _recentChanges.TryDequeue(out _);
+            }
+
             // Raise event to notify subscribers
             StatusChanged?.Invoke(this, new StatusUpdateEventArgs
             {
@@ -62,7 +87,7 @@ public class StatusUpdateService : IStatusUpdateService
                 OldStatus = oldStatus,
                 NewStatus = newStatus,
                 Source = source,
-                Timestamp = DateTime.UtcNow,
+                Timestamp = timestamp,
                 Metadata = metadata ?? new Dictionary<string, string>()
             });
         }
@@ -71,5 +96,18 @@ public class StatusUpdateService : IStatusUpdateService
     public async Task<InstanceRuntimeInfo?> GetLastKnownStatusAsync(string instanceId)
     {
         return await _runtimeStore.GetAsync(instanceId);
+    }
+
+    public Task<IEnumerable<StatusChangeRecord>> GetRecentChangesAsync(
+        DateTime since,
+        InstanceStatus? statusFilter = null)
+    {
+        var filtered = _recentChanges
+            .Where(change => change.Timestamp >= since)
+            .Where(change => statusFilter == null || change.NewStatus == statusFilter)
+            .OrderBy(change => change.Timestamp)
+            .AsEnumerable();
+
+        return Task.FromResult(filtered);
     }
 }

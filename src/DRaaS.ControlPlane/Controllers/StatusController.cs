@@ -71,6 +71,29 @@ public class StatusController : ControllerBase
 
         return Ok(status);
     }
+
+    /// <summary>
+    /// Gets recent status changes for reconciliation polling.
+    /// Returns status changes that occurred since the specified timestamp.
+    /// </summary>
+    /// <param name="since">ISO 8601 timestamp to filter changes (default: last 5 minutes)</param>
+    /// <param name="statusFilter">Optional status filter (e.g., "ConfigurationChanged")</param>
+    /// <returns>List of status changes</returns>
+    [HttpGet("recent-changes")]
+    [ProducesResponseType(StatusCodes.Status200OK)]
+    public async Task<IActionResult> GetRecentStatusChanges(
+        [FromQuery] DateTime? since = null,
+        [FromQuery] InstanceStatus? statusFilter = null)
+    {
+        // Default to last 5 minutes if not specified
+        var sinceTimestamp = since ?? DateTime.UtcNow.AddMinutes(-5);
+
+        var recentChanges = await _statusUpdateService.GetRecentChangesAsync(
+            sinceTimestamp,
+            statusFilter);
+
+        return Ok(recentChanges);
+    }
 }
 
 /// <summary>

@@ -95,6 +95,32 @@ DRaaS.ControlPlane/
 |----------|--------|-------------|
 | `/api/status/updates` | POST | Receive status update from external daemon |
 | `/api/status/{instanceId}/status` | GET | Get last known status for an instance |
+| `/api/status/recent-changes` | GET | Get recent status changes (for reconciliation polling) |
+
+**New**: The `/api/status/recent-changes` endpoint supports API-driven reconciliation:
+
+```bash
+GET /api/status/recent-changes?since=2025-01-28T10:00:00Z&statusFilter=ConfigurationChanged
+```
+
+**Response**:
+```json
+[
+  {
+    "instanceId": "abc-123",
+    "oldStatus": "Running",
+    "newStatus": "ConfigurationChanged",
+    "source": "ConfigurationController",
+    "timestamp": "2025-01-28T14:35:22Z",
+    "metadata": {}
+  }
+]
+```
+
+This endpoint enables:
+- **Reconciliation polling**: DRaaS.Reconciliation polls for `ConfigurationChanged` events
+- **Event buffering**: Last 1000 status changes maintained in memory
+- **Filtered queries**: Query by timestamp and status type
 
 ## Request/Response Examples
 
@@ -274,18 +300,23 @@ public record CreateInstanceRequest
 
 ## Architecture Flow
 
-```
-HTTP Request
-    ↓
-Controller (ControlPlane)
-    ↓
-Service (Core)
-    ↓
-Provider/Manager (Core)
-    ↓
-Storage (Core)
-    ↓
-HTTP Response
+```mermaid
+sequenceDiagram
+    participant Client
+    participant Controller
+    participant Service
+    participant Provider
+    participant Storage
+
+    Client->>Controller: HTTP Request (POST /api/server/instances)
+    Controller->>Service: CreateInstanceAsync()
+    Service->>Service: SelectPlatformAsync()
+    Service->>Provider: AllocateResourcesAsync()
+    Provider-->>Service: ServerConfiguration (host, port)
+    Service->>Storage: SaveAsync(InstanceRuntimeInfo)
+    Storage-->>Service: Success
+    Service-->>Controller: DrasiInstance + Configuration
+    Controller-->>Client: HTTP 200 (JSON response)
 ```
 
 **Example**: Creating an instance

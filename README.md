@@ -19,49 +19,79 @@ DRaaS is a **platform-agnostic orchestration system** that manages the complete 
 
 DRaaS follows **Clean Architecture** principles with clear separation between business logic and interface layers:
 
+```mermaid
+graph TB
+    subgraph Reconciliation["DRaaS.Reconciliation (Worker Service)"]
+        RecBG[ReconciliationBackgroundService]
+        RecSvc[ReconciliationService]
+        RecAPI[ReconciliationApiClient]
+        RecBG -->|Periodic & Event Polling| RecSvc
+        RecSvc -->|HTTP Requests| RecAPI
+    end
+
+    subgraph ControlPlane["DRaaS.ControlPlane (REST API)"]
+        Controllers[Controllers]
+        ServerCtrl[ServerController]
+        ConfigCtrl[ConfigurationController]
+        StatusCtrl[StatusController]
+        Controllers --> ServerCtrl
+        Controllers --> ConfigCtrl
+        Controllers --> StatusCtrl
+    end
+
+    subgraph Core["DRaaS.Core (Business Logic)"]
+        subgraph Services["Services"]
+            Instance[Instance Management]
+            Storage[Runtime Storage]
+            Monitoring[Status Monitoring]
+            Orchestration[Platform Orchestration]
+            Resources[Resource Allocation]
+            Factory[Manager Factory]
+        end
+
+        subgraph Providers["Providers"]
+            Process[ProcessInstanceManager]
+            Docker[DockerInstanceManager]
+            AKS[AksInstanceManager]
+        end
+
+        Services --> Factory
+        Factory --> Providers
+    end
+
+    RecAPI -->|HTTP/REST| Controllers
+    Controllers -->|Uses| Services
+
+    style Reconciliation fill:#e1f5ff
+    style ControlPlane fill:#fff4e1
+    style Core fill:#f0f0f0
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│                     DRaaS.ControlPlane                          │
-│                  (REST API Frontend - Optional)                 │
-│                                                                 │
-│  ┌──────────────────────────────────────────────────────────┐  │
-│  │ Controllers: ServerController, ConfigurationController,  │  │
-│  │              StatusController                            │  │
-│  └──────────────────────────────────────────────────────────┘  │
-│                           │                                     │
-└───────────────────────────┼─────────────────────────────────────┘
-                            │ HTTP/REST
-                            ▼
-┌─────────────────────────────────────────────────────────────────┐
-│                        DRaaS.Core                               │
-│                  (Reusable Business Logic)                      │
-│                                                                 │
-│  ┌──────────────────────────────────────────────────────────┐  │
-│  │ Services/                                                │  │
-│  │  ├── Instance/       (Lifecycle management)             │  │
-│  │  ├── Storage/        (Runtime persistence)              │  │
-│  │  ├── Monitoring/     (Status updates & events)          │  │
-│  │  ├── Orchestration/  (Platform coordination)            │  │
-│  │  ├── ResourceAllocation/ (Port management)              │  │
-│  │  └── Factory/        (Manager selection)                │  │
-│  └──────────────────────────────────────────────────────────┘  │
-│                           │                                     │
-│  ┌──────────────────────────────────────────────────────────┐  │
-│  │ Providers/                                               │  │
-│  │  ├── ProcessInstanceManager    (Bare metal processes)   │  │
-│  │  ├── DockerInstanceManager     (Docker containers)      │  │
-│  │  └── AksInstanceManager        (Kubernetes pods)        │  │
-│  └──────────────────────────────────────────────────────────┘  │
-└─────────────────────────────────────────────────────────────────┘
-```
+
+### System Components
+
+1. **DRaaS.Reconciliation** - Standalone worker service that ensures desired state convergence
+   - Polls ControlPlane API for status changes
+   - Detects configuration drift
+   - Applies reconciliation strategies via API calls
+
+2. **DRaaS.ControlPlane** - REST API layer exposing HTTP endpoints
+   - Instance lifecycle operations (create, start, stop, restart, delete)
+   - Configuration management (CRUD operations)
+   - Status event streaming for reconciliation
+
+3. **DRaaS.Core** - Reusable business logic library
+   - Platform-agnostic services
+   - Platform-specific managers
+   - Domain models and interfaces
 
 ### Key Design Principles
 
-1. **Separation of Concerns**: Core (business logic) is independent of ControlPlane (Web API)
-2. **Interface Segregation**: Small, focused interfaces for each responsibility
-3. **Dependency Inversion**: Platform managers implement interfaces, orchestrator coordinates
-4. **Open/Closed Principle**: Add new platforms without modifying existing code
-5. **Platform-Driven Resource Allocation**: Managers determine their own requirements
+1. **API-First Architecture**: All external components (Reconciliation) communicate through ControlPlane API
+2. **Separation of Concerns**: Core (business logic) is independent of ControlPlane (Web API) and Reconciliation (Worker)
+3. **Interface Segregation**: Small, focused interfaces for each responsibility
+4. **Dependency Inversion**: Platform managers implement interfaces, orchestrator coordinates
+5. **Open/Closed Principle**: Add new platforms or reconciliation strategies without modifying existing code
+6. **Platform-Driven Resource Allocation**: Managers determine their own requirements
 
 ## Core Features
 
@@ -120,29 +150,43 @@ public Task<ServerConfiguration> AllocateResourcesAsync(IPortAllocator portAlloc
 
 Two monitoring patterns based on platform architecture:
 
-**Polling (Process)**:
-```
-ProcessStatusMonitor (every 5s)
-    ↓
-Checks process.HasExited
-    ↓
-IStatusUpdateService.PublishStatusUpdateAsync()
-    ↓
-StatusChanged event raised
+```mermaid
+graph LR
+    subgraph Polling["Polling Pattern (Process)"]
+        PM[ProcessStatusMonitor]
+        PM -->|Every 5s| Check[Check process.HasExited]
+        Check --> SUS1[StatusUpdateService]
+        SUS1 --> Buffer1[Status Change Buffer]
+    end
+
+    subgraph Push["Push Pattern (Docker/AKS)"]
+        Daemon[External Daemon]
+        Daemon -->|Monitors Events| Detect[Detect Status Change]
+        Detect -->|POST /api/status/updates| SC[StatusController]
+        SC --> SUS2[StatusUpdateService]
+        SUS2 --> Buffer2[Status Change Buffer]
+    end
+
+    subgraph Reconciliation["Reconciliation Polling"]
+        RecSvc[ReconciliationBackgroundService]
+        RecSvc -->|GET /api/status/recent-changes| API[Status API]
+        API -->|Returns filtered changes| RecSvc
+    end
+
+    Buffer1 --> API
+    Buffer2 --> API
+
+    style Polling fill:#e8f4f8
+    style Push fill:#f8e8f4
+    style Reconciliation fill:#e1f5ff
 ```
 
-**Push-Based (Docker/AKS)**:
-```
-External Daemon (monitors Docker/K8s events)
-    ↓
-POST /api/status/updates
-    ↓
-StatusController
-    ↓
-IStatusUpdateService.PublishStatusUpdateAsync()
-    ↓
-StatusChanged event raised
-```
+**Status Flow**:
+1. **Local Process Monitoring**: `ProcessStatusMonitor` polls every 5s, publishes to `StatusUpdateService`
+2. **Remote Daemon Monitoring**: External daemons POST status changes to `/api/status/updates`
+3. **Buffer & API**: `StatusUpdateService` maintains rolling buffer (last 1000 changes)
+4. **Reconciliation Polling**: `ReconciliationBackgroundService` polls `/api/status/recent-changes` for `ConfigurationChanged` events
+5. **Event-Driven Reconciliation**: Immediate response to configuration changes via API polling
 
 ### ⚙️ Configuration Management
 
