@@ -18,24 +18,40 @@ public class ConfigurationController : ControllerBase
     }
 
     [HttpPatch]
-    [Route("")]
-    public async Task<IActionResult> PatchConfiguration([FromBody] JsonPatchDocument<Configuration> patchDocument)
+    [Route("instances/{instanceId}")]
+    public async Task<IActionResult> PatchConfiguration(
+        string instanceId,
+        [FromBody] JsonPatchDocument<Configuration> patchDocument)
     {
         if (patchDocument is null)
         {
             return BadRequest("Patch document is required");
         }
 
-        var updatedConfiguration = await _drasiServerConfigurationProvider.ApplyPatchAsync(patchDocument);
-        return Ok(updatedConfiguration);
+        try
+        {
+            var updatedConfiguration = await _drasiServerConfigurationProvider.ApplyPatchAsync(instanceId, patchDocument);
+            return Ok(updatedConfiguration);
+        }
+        catch (KeyNotFoundException)
+        {
+            return NotFound($"Instance '{instanceId}' not found");
+        }
     }
 
     [HttpGet]
-    [Route("")]
-    public async Task<IActionResult> GetConfiguration()
+    [Route("instances/{instanceId}")]
+    public async Task<IActionResult> GetConfiguration(string instanceId)
     {
-        var configuration = await _drasiServerConfigurationProvider.GetConfigurationAsync();
-        return Ok(configuration);
+        try
+        {
+            var configuration = await _drasiServerConfigurationProvider.GetConfigurationAsync(instanceId);
+            return Ok(configuration);
+        }
+        catch (KeyNotFoundException)
+        {
+            return NotFound($"Instance '{instanceId}' not found");
+        }
     }
 }
     
