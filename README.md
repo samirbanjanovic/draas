@@ -934,10 +934,9 @@ DRaaS follows these core principles:
 
 ## License
 
-[Your License Here]
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
 
 ## Acknowledgments
 
 - [Drasi](https://drasi.io/) - The continuous intelligence platform we're orchestrating
-- Clean Architecture principles by Robert C. Martin
 - Domain-Driven Design patterns
