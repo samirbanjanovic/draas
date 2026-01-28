@@ -1,5 +1,5 @@
-﻿using DRaaS.ControlPlane.Models;
-using DRaaS.ControlPlane.Providers;
+﻿using DRaaS.Core.Models;
+using DRaaS.Core.Providers;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Server.Kestrel.Core.Features;
 using Microsoft.AspNetCore.JsonPatch;

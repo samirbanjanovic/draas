@@ -14,4 +14,8 @@
     <PackageReference Include="YamlDotNet" Version="16.3.0" />
   </ItemGroup>
 
+  <ItemGroup>
+    <ProjectReference Include="..\DRaaS.Core\DRaaS.Core.csproj" />
+  </ItemGroup>
+
 </Project>

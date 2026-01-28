@@ -1,6 +1,9 @@
-﻿using DRaaS.ControlPlane.Models;
-using DRaaS.ControlPlane.Providers;
-using DRaaS.ControlPlane.Services;
+﻿using DRaaS.Core.Models;
+using DRaaS.Core.Providers;
+using DRaaS.Core.Services.Instance;
+using DRaaS.Core.Services.Orchestration;
+using DRaaS.Core.Services.Factory;
+using DRaaS.ControlPlane.DTOs;
 using Microsoft.AspNetCore.JsonPatch;
 using Microsoft.AspNetCore.Mvc;
 
@@ -144,11 +147,4 @@ public class ServerController : ControllerBase
         var serverConfig = await _configurationProvider.UpdateLogLevelAsync(instanceId, logLevel);
         return Ok(serverConfig);
     }
-}
-
-public record CreateInstanceRequest
-{
-    public string Name { get; init; } = string.Empty;
-    public string? Description { get; init; }
-    public ServerConfiguration? ServerConfiguration { get; init; }
 }
