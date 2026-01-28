@@ -1,120 +1,632 @@
 # DRaaS - Drasi as a Service
 
-A custom control plane API for configuring and managing instances of [Drasi](https://drasi.io/) servers. DRaaS provides a centralized management and access layer for Drasi instances, enabling teams to interact with Drasi without direct exposure to the underlying infrastructure.
+**Multi-Instance Management Platform for Drasi Servers**
+
+DRaaS provides a comprehensive control plane for managing multiple [Drasi](https://drasi.io/) server instances across different hosting platforms. It abstracts platform complexity, enabling teams to deploy and monitor Drasi instances without direct infrastructure management.
 
 ## Overview
 
-DRaaS (Drasi as a Service) serves as a **control plane** that sits between teams/consumers and isolated Drasi server instances. It provides:
+DRaaS is a **platform-agnostic orchestration system** that manages the complete lifecycle of Drasi server instances. It provides:
 
-- **Centralized Configuration Management**: Generate and manage `config.yaml` files for Drasi servers
-- **Abstracted Access Layer**: Teams interact with Drasi through this API rather than directly accessing Drasi instances
-- **Configuration CRUD Operations**: REST API endpoints for retrieving and patching Drasi server configurations
+- ✅ **Multi-Instance Management**: Create, configure, and manage multiple isolated Drasi instances
+- ✅ **Platform Abstraction**: Deploy to Process (bare metal), Docker, or Azure Kubernetes Service (AKS)
+- ✅ **Automatic Resource Allocation**: Platform managers determine their own resource requirements (host, port)
+- ✅ **Bidirectional Status Monitoring**: Polling for local processes, push-based for distributed platforms
+- ✅ **Configuration Management**: Full CRUD operations on Drasi server configurations (sources, queries, reactions)
+- ✅ **Modular Architecture**: Reusable business logic library (Core) with pluggable interfaces (ControlPlane)
 
-### Architecture Context
+## Architecture
 
-In the broader architecture, the Control Plane acts as a gateway that:
-1. Receives configuration requests from teams via REST API
-2. Manages Drasi server configurations (Sources, Queries, Reactions)
-3. Provides isolation between consumers and Drasi instances
+DRaaS follows **Clean Architecture** principles with clear separation between business logic and interface layers:
 
-## Current Features
-
-### Configuration API
-
-The API currently exposes endpoints to manage Drasi server configurations:
-
-| Endpoint | Method | Description |
-|----------|--------|-------------|
-| `/api/Configuration` | GET | Retrieve the current Drasi server configuration |
-| `/api/Configuration` | PATCH | Apply JSON Patch updates to the configuration |
-
-### Configuration Model
-
-The configuration follows the Drasi server configuration structure:
-
-```yaml
-sources:
-  - kind: <source-type>
-    id: <source-id>
-    autoStart: true/false
-
-queries:
-  - id: <query-id>
-    queryText: "<cypher-query>"
-    sources:
-      - sourceId: <source-id>
-
-reactions:
-  - kind: <reaction-type>
-    id: <reaction-id>
-    queries: [<query-ids>]
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                     DRaaS.ControlPlane                          │
+│                  (REST API Frontend - Optional)                 │
+│                                                                 │
+│  ┌──────────────────────────────────────────────────────────┐  │
+│  │ Controllers: ServerController, ConfigurationController,  │  │
+│  │              StatusController                            │  │
+│  └──────────────────────────────────────────────────────────┘  │
+│                           │                                     │
+└───────────────────────────┼─────────────────────────────────────┘
+                            │ HTTP/REST
+                            ▼
+┌─────────────────────────────────────────────────────────────────┐
+│                        DRaaS.Core                               │
+│                  (Reusable Business Logic)                      │
+│                                                                 │
+│  ┌──────────────────────────────────────────────────────────┐  │
+│  │ Services/                                                │  │
+│  │  ├── Instance/       (Lifecycle management)             │  │
+│  │  ├── Storage/        (Runtime persistence)              │  │
+│  │  ├── Monitoring/     (Status updates & events)          │  │
+│  │  ├── Orchestration/  (Platform coordination)            │  │
+│  │  ├── ResourceAllocation/ (Port management)              │  │
+│  │  └── Factory/        (Manager selection)                │  │
+│  └──────────────────────────────────────────────────────────┘  │
+│                           │                                     │
+│  ┌──────────────────────────────────────────────────────────┐  │
+│  │ Providers/                                               │  │
+│  │  ├── ProcessInstanceManager    (Bare metal processes)   │  │
+│  │  ├── DockerInstanceManager     (Docker containers)      │  │
+│  │  └── AksInstanceManager        (Kubernetes pods)        │  │
+│  └──────────────────────────────────────────────────────────┘  │
+└─────────────────────────────────────────────────────────────────┘
 ```
 
-**Components:**
-- **Sources**: Define data sources that Drasi connects to (kind, id, autoStart)
-- **Queries**: Define Cypher queries that process data from sources
-- **Reactions**: Define outputs/actions triggered by query results
+### Key Design Principles
+
+1. **Separation of Concerns**: Core (business logic) is independent of ControlPlane (Web API)
+2. **Interface Segregation**: Small, focused interfaces for each responsibility
+3. **Dependency Inversion**: Platform managers implement interfaces, orchestrator coordinates
+4. **Open/Closed Principle**: Add new platforms without modifying existing code
+5. **Platform-Driven Resource Allocation**: Managers determine their own requirements
+
+## Core Features
+
+### 🎯 Multi-Instance Management
+
+Create and manage multiple isolated Drasi instances:
+
+```bash
+POST /api/server/instances
+{
+  "name": "analytics-prod",
+  "description": "Production analytics instance"
+}
+```
+
+**Response**:
+```json
+{
+  "instance": {
+    "id": "abc-123",
+    "name": "analytics-prod",
+    "platformType": "Process",
+    "status": "Created",
+    "createdAt": "2025-01-28T10:00:00Z"
+  },
+  "serverConfiguration": {
+    "host": "127.0.0.1",
+    "port": 8080,
+    "logLevel": "info"
+  }
+}
+```
+
+### 🖥️ Platform Abstraction
+
+Deploy to three platforms with automatic selection and resource allocation:
+
+| Platform | Description | Resource Allocation | Monitoring |
+|----------|-------------|---------------------|------------|
+| **Process** | Bare metal OS processes | `127.0.0.1` + allocated port | Polling (5s intervals) |
+| **Docker** | Docker containers | `0.0.0.0` + allocated port | Push (daemon) |
+| **AKS** | Kubernetes pods | `0.0.0.0:8080` (K8s service) | Push (daemon) |
+
+Platform managers implement `IDrasiServerInstanceManager` and determine their own hosting parameters:
+
+```csharp
+public Task<ServerConfiguration> AllocateResourcesAsync(IPortAllocator portAllocator)
+{
+    // Process manager knows it needs localhost
+    var port = portAllocator.AllocatePort();
+    return new ServerConfiguration { Host = "127.0.0.1", Port = port };
+}
+```
+
+### 📊 Bidirectional Status Monitoring
+
+Two monitoring patterns based on platform architecture:
+
+**Polling (Process)**:
+```
+ProcessStatusMonitor (every 5s)
+    ↓
+Checks process.HasExited
+    ↓
+IStatusUpdateService.PublishStatusUpdateAsync()
+    ↓
+StatusChanged event raised
+```
+
+**Push-Based (Docker/AKS)**:
+```
+External Daemon (monitors Docker/K8s events)
+    ↓
+POST /api/status/updates
+    ↓
+StatusController
+    ↓
+IStatusUpdateService.PublishStatusUpdateAsync()
+    ↓
+StatusChanged event raised
+```
+
+### ⚙️ Configuration Management
+
+Full CRUD operations on Drasi configurations using **JSON Patch (RFC 6902)**:
+
+```bash
+PATCH /api/configuration/instances/abc-123
+Content-Type: application/json-patch+json
+
+[
+  {
+    "op": "add",
+    "path": "/sources/-",
+    "value": {
+      "kind": "postgresql",
+      "id": "my-db",
+      "autoStart": true
+    }
+  },
+  {
+    "op": "add",
+    "path": "/queries/-",
+    "value": {
+      "id": "active-users",
+      "queryText": "MATCH (u:User) WHERE u.active = true RETURN u",
+      "sources": [{ "sourceId": "my-db" }]
+    }
+  }
+]
+```
+
+**Configuration Model** (matches Drasi server.yaml):
+
+```yaml
+host: 127.0.0.1
+port: 8080
+logLevel: info
+
+sources:
+  - kind: postgresql
+    id: my-db
+    autoStart: true
+
+queries:
+  - id: active-users
+    queryText: "MATCH (u:User) WHERE u.active = true RETURN u"
+    sources:
+      - sourceId: my-db
+
+reactions:
+  - kind: webhook
+    id: notify-slack
+    queries: [active-users]
+```
+
+### 🔌 Modular Architecture
+
+**DRaaS.Core** is a reusable library that can be consumed by any .NET application:
+
+- **Web API** (current): ASP.NET Core REST API
+- **Console App**: CLI tool for automation
+- **Desktop App**: WPF/MAUI visual manager
+- **Azure Function**: Serverless event-driven management
+- **gRPC Service**: High-performance binary protocol
+
+```csharp
+// Console Application Example
+var services = new ServiceCollection();
+services.AddSingleton<IDrasiInstanceService, DrasiInstanceService>();
+// ... register Core services
+
+var serviceProvider = services.BuildServiceProvider();
+var instanceService = serviceProvider.GetRequiredService<IDrasiInstanceService>();
+
+var instance = await instanceService.CreateInstanceAsync("my-instance");
+```
 
 ## Technology Stack
 
-- **.NET 10.0** - ASP.NET Core Web API
-- **YamlDotNet** - YAML serialization/deserialization for Drasi config files
-- **JSON Patch (RFC 6902)** - Partial configuration updates via `Microsoft.AspNetCore.JsonPatch`
-- **Scalar** - OpenAPI documentation UI (available in development mode)
+### Core Library
+- **.NET 10.0** - Target framework
+- **YamlDotNet 16.3.0** - YAML serialization for Drasi configs
+- **Microsoft.AspNetCore.JsonPatch 10.0.2** - JSON Patch support
+
+### Web API (ControlPlane)
+- **ASP.NET Core 10.0** - Web framework
+- **Microsoft.AspNetCore.Mvc.NewtonsoftJson** - Required for JsonPatch
+- **Scalar.AspNetCore** - Modern OpenAPI documentation UI
+
+## Project Structure
+
+```
+src/
+├── DRaaS.Core/                        # Reusable business logic library
+│   ├── Models/                        # Domain models
+│   │   ├── Configuration.cs           # Drasi server configuration
+│   │   ├── DrasiInstance.cs           # Instance metadata
+│   │   ├── InstanceRuntimeInfo.cs     # Runtime state
+│   │   ├── PlatformType.cs            # Enum: Process, Docker, AKS
+│   │   ├── Query.cs, Source.cs, Reaction.cs
+│   │   └── ServerConfiguration.cs     # Server settings
+│   │
+│   ├── Services/                      # Business logic services
+│   │   ├── Instance/                  # Instance lifecycle
+│   │   │   ├── IDrasiInstanceService.cs
+│   │   │   └── DrasiInstanceService.cs
+│   │   ├── Storage/                   # Runtime persistence
+│   │   │   ├── IInstanceRuntimeStore.cs
+│   │   │   └── InMemoryInstanceRuntimeStore.cs
+│   │   ├── ResourceAllocation/        # Port management
+│   │   │   ├── IPortAllocator.cs
+│   │   │   └── PortAllocator.cs
+│   │   ├── Monitoring/                # Status monitoring
+│   │   │   ├── IStatusUpdateService.cs
+│   │   │   ├── StatusUpdateService.cs
+│   │   │   ├── IStatusMonitor.cs
+│   │   │   └── ProcessStatusMonitor.cs
+│   │   ├── Orchestration/             # Platform coordination
+│   │   │   ├── IPlatformOrchestratorService.cs
+│   │   │   └── PlatformOrchestratorService.cs
+│   │   └── Factory/                   # Manager selection
+│   │       ├── IInstanceManagerFactory.cs
+│   │       └── InstanceManagerFactory.cs
+│   │
+│   ├── Providers/                     # Platform implementations
+│   │   ├── IDrasiServerInstanceManager.cs
+│   │   ├── IDrasiServerConfigurationProvider.cs
+│   │   ├── DrasiServerConfigurationProvider.cs
+│   │   └── InstanceManagers/
+│   │       ├── ProcessInstanceManager.cs
+│   │       ├── DockerInstanceManager.cs
+│   │       └── AksInstanceManager.cs
+│   │
+│   ├── README.md                      # Core architecture documentation
+│   ├── DISTRIBUTED_MONITORING.md      # Monitoring architecture
+│   └── Services/README.md             # Service organization guide
+│
+└── DRaaS.ControlPlane/                # Web API frontend
+    ├── Controllers/                   # REST API endpoints
+    │   ├── ServerController.cs        # Instance management
+    │   ├── ConfigurationController.cs # Configuration CRUD
+    │   └── StatusController.cs        # Daemon status updates
+    ├── DTOs/                          # API request/response models
+    │   └── CreateInstanceRequest.cs
+    ├── Program.cs                     # DI and startup
+    └── README.md                      # API documentation
+```
 
 ## Getting Started
 
 ### Prerequisites
 
-- .NET 10.0 SDK
+- **.NET 10.0 SDK** (or later)
 
-### Running the Application
+### Running the Web API
 
 ```bash
+# Clone the repository
+git clone https://github.com/yourusername/draas.git
+cd draas
+
+# Run the Web API
 cd src/DRaaS.ControlPlane
 dotnet run
 ```
 
-### API Documentation
+**API Documentation**:
+- Scalar UI: `http://localhost:5000/scalar/v1` (recommended)
+- Swagger UI: `http://localhost:5000/swagger`
 
-When running in development mode, the API documentation is available via Scalar at the `/scalar/v1` endpoint.
+### Using DRaaS.Core in Your Application
 
-## Project Structure
+#### 1. Reference the Core Library
 
-```
-src/DRaaS.ControlPlane/
-├── Controllers/
-│   └── ConfigurationController.cs    # REST API endpoints
-├── Models/
-│   ├── Configuration.cs              # Root configuration model
-│   ├── Source.cs                     # Data source definition
-│   ├── Query.cs                      # Query definition
-│   ├── QuerySource.cs                # Query-to-source mapping
-│   └── Reaction.cs                   # Reaction definition
-├── Providers/
-│   ├── IDrasiServerConfigurationProvider.cs   # Configuration provider interface
-│   └── DrasiServerConfigurationProvider.cs    # YAML-based configuration provider
-└── Program.cs                        # Application entry point
+```xml
+<ItemGroup>
+  <ProjectReference Include="..\DRaaS.Core\DRaaS.Core.csproj" />
+</ItemGroup>
 ```
 
-## Planned Features
+#### 2. Register Services
 
-The following capabilities are planned for future development:
+```csharp
+using DRaaS.Core.Services.Instance;
+using DRaaS.Core.Services.Storage;
+using DRaaS.Core.Services.Orchestration;
+using DRaaS.Core.Services.ResourceAllocation;
+using DRaaS.Core.Services.Monitoring;
+using DRaaS.Core.Services.Factory;
+using DRaaS.Core.Providers.InstanceManagers;
 
-- **RBAC (Role-Based Access Control)**: Control which users/teams can access specific configurations
-- **Query-to-RBAC Matching**: Determine if queries match RBAC roles and permissions
-- **Persistent Storage**: Configuration persistence to file or external storage
-- **Multi-Instance Management**: Support for managing multiple Drasi server instances
+var services = new ServiceCollection();
+
+// Core services
+services.AddSingleton<IPortAllocator, PortAllocator>();
+services.AddSingleton<IInstanceRuntimeStore, InMemoryInstanceRuntimeStore>();
+services.AddSingleton<IDrasiInstanceService, DrasiInstanceService>();
+services.AddSingleton<IStatusUpdateService, StatusUpdateService>();
+
+// Platform managers
+services.AddSingleton<IDrasiServerInstanceManager, ProcessInstanceManager>();
+services.AddSingleton<IDrasiServerInstanceManager, DockerInstanceManager>();
+
+// Factory and orchestrator
+services.AddSingleton<IInstanceManagerFactory, InstanceManagerFactory>();
+services.AddSingleton<IPlatformOrchestratorService, PlatformOrchestratorService>();
+
+var serviceProvider = services.BuildServiceProvider();
+```
+
+#### 3. Use the Services
+
+```csharp
+var instanceService = serviceProvider.GetRequiredService<IDrasiInstanceService>();
+
+// Create instance
+var instance = await instanceService.CreateInstanceAsync(
+    name: "my-instance",
+    description: "Test instance");
+
+Console.WriteLine($"Created: {instance.Id} on {instance.PlatformType}");
+
+// Get all instances
+var instances = await instanceService.GetAllInstancesAsync();
+foreach (var inst in instances)
+{
+    Console.WriteLine($"- {inst.Name} ({inst.Status})");
+}
+```
+
+## API Reference
+
+### Instance Management
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/api/server/instances` | POST | Create a new instance |
+| `/api/server/instances` | GET | List all instances |
+| `/api/server/instances/{id}` | GET | Get instance by ID |
+| `/api/server/instances/{id}` | DELETE | Delete an instance |
+| `/api/server/instances/{id}/start` | POST | Start an instance |
+| `/api/server/instances/{id}/stop` | POST | Stop an instance |
+| `/api/server/instances/{id}/restart` | POST | Restart an instance |
+| `/api/server/instances/{id}/runtime-status` | GET | Get runtime status |
+| `/api/server/platforms` | GET | List available platforms |
+
+### Configuration Management
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/api/configuration/instances/{id}` | GET | Get full configuration |
+| `/api/configuration/instances/{id}` | PATCH | Update configuration (JSON Patch) |
+| `/api/server/instances/{id}/server-configuration` | GET | Get server settings only |
+| `/api/server/instances/{id}/server-configuration` | PATCH | Update server settings |
+
+### Status Monitoring
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/api/status/updates` | POST | Receive status update from daemon |
+| `/api/status/{instanceId}/status` | GET | Get last known status |
+
+## Monitoring Architecture
+
+### Process Monitoring (Polling)
+
+The control plane automatically monitors local processes:
+
+```csharp
+// Runs in background (Program.cs)
+var statusMonitor = app.Services.GetRequiredService<IStatusMonitor>();
+await statusMonitor.StartMonitoringAsync(applicationLifetime.ApplicationStopping);
+```
+
+Checks every **5 seconds**:
+- Process still running?
+- Exit code if stopped
+- Publishes status changes to `IStatusUpdateService`
+
+### Docker/AKS Monitoring (Push)
+
+External daemons monitor distributed platforms and push updates:
+
+**Docker Daemon Example**:
+```csharp
+// Daemon subscribes to Docker events
+await foreach (var message in dockerClient.System.MonitorEventsAsync())
+{
+    var status = MapDockerEventToStatus(message.Status);
+
+    // Push to control plane
+    await httpClient.PostAsJsonAsync(
+        "http://control-plane/api/status/updates",
+        new {
+            instanceId = message.Actor.Attributes["draas.instanceId"],
+            status = status,
+            source = "DockerDaemon"
+        });
+}
+```
+
+See [DISTRIBUTED_MONITORING.md](src/DRaaS.Core/DISTRIBUTED_MONITORING.md) for complete daemon implementation examples.
+
+## Status Updates
+
+Subscribe to status changes in your application:
+
+```csharp
+var statusService = serviceProvider.GetRequiredService<IStatusUpdateService>();
+
+statusService.StatusChanged += (sender, e) =>
+{
+    Console.WriteLine($"[{e.Timestamp}] {e.InstanceId}");
+    Console.WriteLine($"  {e.OldStatus} → {e.NewStatus}");
+    Console.WriteLine($"  Source: {e.Source}");
+
+    // Trigger actions:
+    // - Send notifications (email, Slack, Teams)
+    // - Log to external system
+    // - Auto-restart on failure
+    // - Update UI via SignalR
+};
+```
+
+## Extensibility
+
+### Adding a New Platform
+
+1. **Implement the interface**:
+
+```csharp
+public class AzureContainerAppsManager : IDrasiServerInstanceManager
+{
+    public string PlatformType => "AzureContainerApps";
+
+    public Task<ServerConfiguration> AllocateResourcesAsync(IPortAllocator portAllocator)
+    {
+        // Container Apps get their own URLs
+        return new ServerConfiguration
+        {
+            Host = "0.0.0.0",
+            Port = 80, // Container Apps handles routing
+            LogLevel = "info"
+        };
+    }
+
+    // Implement Start, Stop, Restart, GetStatus...
+}
+```
+
+2. **Register in DI**:
+
+```csharp
+services.AddSingleton<IDrasiServerInstanceManager, AzureContainerAppsManager>();
+```
+
+3. **Update enum**:
+
+```csharp
+public enum PlatformType
+{
+    Process = 0,
+    Docker = 1,
+    AKS = 2,
+    AzureContainerApps = 3  // New
+}
+```
+
+### Adding Alternative Storage
+
+Implement `IInstanceRuntimeStore` for distributed scenarios:
+
+```csharp
+public class CosmosDbInstanceRuntimeStore : IInstanceRuntimeStore
+{
+    private readonly CosmosClient _cosmosClient;
+    private readonly Container _container;
+
+    public async Task SaveAsync(InstanceRuntimeInfo runtimeInfo)
+    {
+        await _container.UpsertItemAsync(
+            runtimeInfo,
+            new PartitionKey(runtimeInfo.InstanceId));
+    }
+
+    // Implement Get, Delete, GetByPlatform...
+}
+```
+
+**Register**:
+```csharp
+services.AddSingleton<IInstanceRuntimeStore, CosmosDbInstanceRuntimeStore>();
+```
 
 ## Development Status
 
-⚠️ **This project is under active development.**
+### ✅ Implemented
 
-Current implementation includes:
-- ✅ Configuration model structure (Sources, Queries, Reactions)
-- ✅ GET endpoint for retrieving configuration
-- ✅ PATCH endpoint for updating configuration (JSON Patch)
-- ✅ YAML serialization/deserialization
-- 🔲 Persistent storage (currently uses in-memory/hardcoded data)
-- 🔲 RBAC implementation
-- 🔲 Multi-instance Drasi management
+- ✅ Multi-instance management (create, read, update, delete)
+- ✅ Platform abstraction (Process, Docker, AKS)
+- ✅ Platform-driven resource allocation
+- ✅ Automatic port allocation and tracking
+- ✅ Bidirectional status monitoring (polling + push)
+- ✅ Configuration management with JSON Patch
+- ✅ YAML serialization for Drasi configs
+- ✅ Event-driven status updates
+- ✅ Modular service organization (6 domains)
+- ✅ Clean architecture separation (Core + ControlPlane)
+- ✅ OpenAPI documentation (Scalar)
+- ✅ Comprehensive documentation
+
+### 🔲 Planned Features
+
+#### Platform Implementations
+- 🔲 Actual process spawning (currently stubbed)
+- 🔲 Docker container management (Docker SDK)
+- 🔲 Kubernetes deployment management (K8s client)
+- 🔲 Docker monitoring daemon
+- 🔲 AKS monitoring daemon
+
+#### Storage & Persistence
+- 🔲 File-based configuration storage
+- 🔲 Azure Cosmos DB runtime store
+- 🔲 SQL Server runtime store
+- 🔲 Redis runtime store
+
+#### Advanced Orchestration
+- 🔲 Load-based platform selection
+- 🔲 Cost-based platform selection
+- 🔲 Capability-based routing
+
+#### Production Features
+- 🔲 Authentication & authorization (JWT, API keys)
+- 🔲 Role-based access control (RBAC)
+- 🔲 Rate limiting
+- 🔲 Request validation (FluentValidation)
+- 🔲 Global error handling middleware
+- 🔲 Structured logging (Serilog)
+- 🔲 Health checks endpoint
+- 🔲 Metrics (Prometheus)
+- 🔲 SignalR for real-time UI updates
+- 🔲 Webhook notifications
+
+#### Testing
+- 🔲 Unit tests for all services
+- 🔲 Integration tests for API endpoints
+- 🔲 End-to-end tests for instance lifecycle
+
+## Documentation
+
+- **[DRaaS.Core README](src/DRaaS.Core/README.md)** - Core architecture, usage examples, extensibility
+- **[DRaaS.ControlPlane README](src/DRaaS.ControlPlane/README.md)** - Web API documentation, endpoints, DTOs
+- **[Services Organization](src/DRaaS.Core/Services/README.md)** - Service layer structure, domains, dependencies
+- **[Distributed Monitoring](src/DRaaS.Core/DISTRIBUTED_MONITORING.md)** - Monitoring architecture, daemon examples, K8s deployment
+
+## Contributing
+
+Contributions are welcome! Please follow these guidelines:
+
+1. **Maintain separation of concerns**: Business logic in Core, interface in ControlPlane
+2. **Use interfaces**: Depend on abstractions, not implementations
+3. **Domain-driven organization**: Place services in appropriate domain folders
+4. **Document architecture decisions**: Update relevant READMEs
+5. **Follow existing patterns**: Platform managers, service structure, DI registration
+6. **Write tests**: Unit tests for Core, integration tests for ControlPlane
+
+## Design Principles
+
+DRaaS follows these core principles:
+
+1. **Separation of Concerns**: Core library independent of Web API
+2. **Interface Segregation**: Small, focused interfaces
+3. **Dependency Inversion**: Depend on abstractions
+4. **Open/Closed Principle**: Extensible without modification
+5. **Single Responsibility**: Each service has one clear purpose
+6. **Platform-Driven Design**: Managers know their own requirements
+7. **Event-Driven Architecture**: Status changes propagate via events
+
+## License
+
+[Your License Here]
+
+## Acknowledgments
+
+- [Drasi](https://drasi.io/) - The continuous intelligence platform we're orchestrating
+- Clean Architecture principles by Robert C. Martin
+- Domain-Driven Design patterns
