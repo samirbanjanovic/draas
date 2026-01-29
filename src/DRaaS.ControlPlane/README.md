@@ -6,28 +6,31 @@ DRaaS.ControlPlane is a **Web API layer** that provides HTTP/REST endpoints for 
 
 ## Overview
 
-This project serves as **one possible interface** to the DRaaS.Core library. While Core contains all the business logic for managing Drasi instances, ControlPlane provides a Web API wrapper that:
+This project serves as the HTTP/REST interface to DRaaS. While Core contains all the business logic and message bus infrastructure for managing Drasi instances, ControlPlane provides a Web API wrapper that:
 
 - Exposes REST endpoints for instance management
 - Handles HTTP requests and responses
+- Publishes commands to the message bus for worker services to process
 - Provides OpenAPI documentation via Scalar
 - Manages dependency injection and application startup
 - Receives status updates from external platform daemons
 
 ### Why Separate Projects?
 
-The separation between **ControlPlane** (interface layer) and **Core** (business logic) enables:
+The separation between ControlPlane (interface layer), Core (business logic), and Workers (platform execution) enables:
 
-✅ **Multiple Interfaces**: Console apps, desktop apps, Azure Functions, etc. can all use DRaaS.Core  
-✅ **Technology Independence**: Core has no ASP.NET dependencies  
-✅ **Reusability**: Core can be distributed as a NuGet package  
-✅ **Testability**: Business logic can be tested independently  
-✅ **Flexibility**: Swap Web API for gRPC, GraphQL, or other protocols
+- Multiple Interfaces: Console apps, desktop apps, Azure Functions, etc. can all use DRaaS.Core
+- Technology Independence: Core has no ASP.NET dependencies
+- Reusability: Core can be distributed as a NuGet package
+- Testability: Business logic can be tested independently
+- Flexibility: Swap Web API for gRPC, GraphQL, or other protocols
+- Distributed Execution: Platform workers can run on separate machines from the API
 
 ## Technology Stack
 
 - **.NET 10.0** - ASP.NET Core Web API
-- **DRaaS.Core** - Business logic library (project reference)
+- **DRaaS.Core** - Business logic library with message bus infrastructure
+- **Stack Exchange.Redis** - Redis client for message bus communication
 - **YamlDotNet 16.3.0** - YAML serialization for Drasi configurations
 - **Microsoft.AspNetCore.JsonPatch** - RFC 6902 JSON Patch support
 - **Newtonsoft.Json** - Required for JsonPatch integration
@@ -60,8 +63,9 @@ DRaaS.ControlPlane/
 **ControlPlane Does NOT Contain**:
 - Business logic (lives in DRaaS.Core)
 - Domain models (lives in DRaaS.Core)
-- Instance managers (lives in DRaaS.Core)
+- Instance managers (lives in DRaaS.Core, used by Workers)
 - Services (lives in DRaaS.Core)
+- Platform workers (live in separate DRaaS.Workers.Platform.* projects)
 
 ## API Endpoints
 
@@ -203,15 +207,23 @@ Content-Type: application/json
 
 ## Dependency Injection
 
-All services from **DRaaS.Core** are registered in `Program.cs`:
+All services from DRaaS.Core are registered in `Program.cs`:
 
 ```csharp
+// Redis connection for message bus
+var redisConnectionString = builder.Configuration.GetConnectionString("Redis") ?? "localhost:6379";
+var redisConnection = await ConnectionMultiplexer.ConnectAsync(redisConnectionString);
+builder.Services.AddSingleton<IConnectionMultiplexer>(redisConnection);
+
+// Message bus
+builder.Services.AddSingleton<IMessageBus, RedisMessageBus>();
+
 // Core services
 builder.Services.AddSingleton<IPortAllocator, PortAllocator>();
 builder.Services.AddSingleton<IInstanceRuntimeStore, InMemoryInstanceRuntimeStore>();
 builder.Services.AddSingleton<IDrasiInstanceService, DrasiInstanceService>();
 
-// Platform managers
+// Platform managers (registered for metadata, actual execution happens in workers)
 builder.Services.AddSingleton<IDrasiServerInstanceManager, ProcessInstanceManager>();
 builder.Services.AddSingleton<IDrasiServerInstanceManager, DockerInstanceManager>();
 builder.Services.AddSingleton<IDrasiServerInstanceManager, AksInstanceManager>();
@@ -221,10 +233,11 @@ builder.Services.AddSingleton<IPlatformOrchestratorService, PlatformOrchestrator
 
 // Monitoring
 builder.Services.AddSingleton<IStatusUpdateService, StatusUpdateService>();
-builder.Services.AddSingleton<IStatusMonitor, ProcessStatusMonitor>();
 ```
 
 Controllers inject these services via constructor injection.
+
+**Note**: Platform managers are registered but the API primarily publishes commands to the message bus. Actual instance execution is handled by separate worker services (DRaaS.Workers.Platform.Process, etc.).
 
 ## Running the Application
 
@@ -274,9 +287,31 @@ Configures development server ports and URLs:
 
 ### Application Settings (`appsettings.json`)
 
+#### Redis Connection
+
+Configure the Redis connection for the message bus:
+
+```json
+{
+  "ConnectionStrings": {
+    "Redis": "localhost:6379"
+  }
+}
+```
+
+For distributed deployments, point to a shared Redis instance:
+
+```json
+{
+  "ConnectionStrings": {
+    "Redis": "redis-cluster.example.com:6379"
+  }
+}
+```
+
 #### ProcessInstanceManager Configuration
 
-Configure how local process instances are launched:
+Configure how process instance metadata is managed. Note that actual process execution happens in DRaaS.Workers.Platform.Process service.
 
 ```json
 {
@@ -300,12 +335,14 @@ Configure how local process instances are launched:
 | `ShutdownTimeoutSeconds` | int | `5` | Graceful shutdown timeout before force kill |
 | `WorkingDirectory` | string | `"./drasi-runtime"` | Working directory for drasi-server processes |
 
-When creating instances with `platformType: "Process"`, the system:
+When creating instances with `platformType: "Process"`:
 
-1. Generates a YAML config file at `{InstanceConfigDirectory}/{instanceId}-config.yaml`
-2. Launches drasi-server: `drasi-server --config {configFile}`
-3. Tracks the process with PID
-4. Monitors health and publishes status changes
+1. API publishes StartInstanceCommand to `instance.commands.process` channel
+2. ProcessCommandWorker (in DRaaS.Workers.Platform.Process) receives command
+3. Worker generates YAML config file at `{InstanceConfigDirectory}/{instanceId}-config.yaml`
+4. Worker launches drasi-server: `drasi-server --config {configFile}`
+5. Worker tracks the process with PID and monitors health
+6. Worker publishes InstanceStartedEvent to `instance.events` channel
 
 **Example Generated YAML**:
 ```yaml
@@ -368,49 +405,59 @@ public record CreateInstanceRequest
 sequenceDiagram
     participant Client
     participant Controller
-    participant Service
-    participant Provider
-    participant Storage
+    participant MessageBus
+    participant Worker
+    participant ProcessManager
 
-    Client->>Controller: HTTP Request (POST /api/server/instances)
-    Controller->>Service: CreateInstanceAsync()
-    Service->>Service: SelectPlatformAsync()
-    Service->>Provider: AllocateResourcesAsync()
-    Provider-->>Service: ServerConfiguration (host, port)
-    Service->>Storage: SaveAsync(InstanceRuntimeInfo)
-    Storage-->>Service: Success
-    Service-->>Controller: DrasiInstance + Configuration
-    Controller-->>Client: HTTP 200 (JSON response)
+    Client->>Controller: HTTP POST /api/server/instances
+    Controller->>Controller: CreateInstanceAsync()<br/>(allocate port, create metadata)
+    Controller->>MessageBus: Publish StartInstanceCommand<br/>to instance.commands.process
+    Controller-->>Client: HTTP 202 Accepted<br/>(operation queued)
+
+    MessageBus->>Worker: Deliver StartInstanceCommand
+    Worker->>ProcessManager: StartInstanceAsync()
+    ProcessManager->>ProcessManager: Generate YAML config
+    ProcessManager->>ProcessManager: Launch drasi-server process
+    Worker->>MessageBus: Publish InstanceStartedEvent<br/>to instance.events
+
+    MessageBus-->>Controller: Event delivered (if subscribed)
 ```
 
-**Example**: Creating an instance
+**Example**: Creating and starting an instance
 
-1. `POST /api/server/instances` → `ServerController`
-2. `ServerController` → `IDrasiInstanceService.CreateInstanceAsync()`
-3. `DrasiInstanceService` → `IPlatformOrchestratorService.SelectPlatformAsync()`
-4. `PlatformOrchestratorService` → `IInstanceManagerFactory.GetManager()`
-5. `ProcessInstanceManager` → `IPortAllocator.AllocatePort()`
-6. `DrasiInstanceService` → `IInstanceRuntimeStore.SaveAsync()`
-7. Return instance metadata and configuration to controller
-8. Controller returns HTTP 200 with JSON response
+1. `POST /api/server/instances` → ServerController
+2. ServerController → IDrasiInstanceService.CreateInstanceAsync()
+3. DrasiInstanceService → IPlatformOrchestratorService.SelectPlatformAsync()
+4. PlatformOrchestratorService → IInstanceManagerFactory.GetManager()
+5. Manager → IPortAllocator.AllocatePort()
+6. DrasiInstanceService → IInstanceRuntimeStore.SaveAsync()
+7. ServerController → IMessageBus.PublishAsync(StartInstanceCommand)
+8. Controller returns HTTP 202 Accepted (command queued)
+9. ProcessCommandWorker (separate service) receives command
+10. Worker executes operation and publishes InstanceStartedEvent
+11. Subscribers (monitoring, reconciliation) receive event
 
 ## Monitoring Integration
 
-### Polling-Based (Process)
+### Worker-Based (Process)
 
-ControlPlane automatically starts the `ProcessStatusMonitor` on application startup:
+Process monitoring is handled by the DRaaS.Workers.Platform.Process service:
 
-```csharp
-var statusMonitor = app.Services.GetRequiredService<IStatusMonitor>();
-if (statusMonitor.RequiresPolling)
-{
-    _ = statusMonitor.StartMonitoringAsync(lifetime.ApplicationStopping);
-}
+```
+ProcessMonitorWorker (separate service)
+    ↓ Polls every 10 seconds
+Detects process status changes
+    ↓
+Publishes InstanceStatusChangedEvent to instance.events channel
+    ↓
+Redis Message Bus
+    ↓
+Subscribers receive event
 ```
 
-The monitor checks local processes every 5 seconds and publishes status changes to `IStatusUpdateService`.
+The worker service must be running separately for process monitoring to work.
 
-### Push-Based (Docker/AKS)
+### Daemon-Based (Docker/AKS)
 
 External daemons POST status updates to `/api/status/updates`:
 

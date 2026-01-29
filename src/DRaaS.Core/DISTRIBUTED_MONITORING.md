@@ -2,38 +2,54 @@
 
 ## Overview
 
-DRaaS supports **bidirectional status management** with two distinct patterns:
+DRaaS supports monitoring across multiple deployment patterns:
 
-1. **Local Polling (Process)**: Control plane actively polls process status
-2. **Push-Based (Docker/AKS)**: External daemons push status updates to control plane API
+1. **Worker-Based (Process)**: Dedicated worker service monitors local processes and publishes events via message bus
+2. **Daemon-Based (Docker/AKS)**: External daemons monitor containers/pods and POST updates to ControlPlane API
+
+The system uses both message bus communication (for distributed workers) and HTTP API communication (for external daemons) to provide flexible monitoring across different platforms.
 
 ## Architecture Diagram
 
 ```mermaid
 graph TB
-    subgraph ControlPlane["DRaaS Control Plane"]
-        SUS[StatusUpdateService<br/>Status Bus]
-        PM[ProcessStatusMonitor<br/>Polling: 5s intervals]
+    subgraph MessageBus["Redis Message Bus"]
+        InstanceEvents[instance.events channel]
+        StatusEvents[status.events channel]
+    end
+
+    subgraph ProcessWorker["DRaaS.Workers.Platform.Process"]
+        PMW[ProcessMonitorWorker<br/>Polling: 10s intervals]
+        PCW[ProcessCommandWorker<br/>Command Handler]
+        PIM[ProcessInstanceManager<br/>Process Tracking]
+
+        PMW -->|Checks Process Health| PIM
+        PMW -->|Publishes Events| InstanceEvents
+        PCW -->|Starts/Stops| PIM
+    end
+
+    subgraph ControlPlane["DRaaS.ControlPlane API"]
         SC[StatusController<br/>POST /api/status/updates]
+        SUS[StatusUpdateService<br/>Status Bus]
         Buffer[Status Change Buffer<br/>Last 1000 changes]
         API[Status API<br/>GET /recent-changes]
 
-        PM -->|Local Polling| SUS
-        SC -->|External Push| SUS
+        SC -->|Daemon Updates| SUS
         SUS --> Buffer
         Buffer --> API
     end
 
-    subgraph Reconciliation["DRaaS Reconciliation"]
+    subgraph Reconciliation["DRaaS.Reconciliation"]
         RecSvc[ReconciliationBackgroundService]
         RecSvc -->|Poll Events| API
+        RecSvc -->|Subscribe| InstanceEvents
     end
 
     subgraph Processes["Local Processes"]
         P1[Drasi Process 1]
         P2[Drasi Process 2]
-        PM -.->|Check HasExited| P1
-        PM -.->|Check HasExited| P2
+        PIM -.->|Tracks| P1
+        PIM -.->|Tracks| P2
     end
 
     subgraph DockerDaemon["Docker Daemon"]
@@ -50,6 +66,11 @@ graph TB
         AD -->|HTTP POST| SC
     end
 
+    InstanceEvents -->|Subscribe| RecSvc
+    InstanceEvents -.->|Can Subscribe| ControlPlane
+
+    style MessageBus fill:#ffe6e6
+    style ProcessWorker fill:#e8f8e8
     style ControlPlane fill:#fff4e1
     style Reconciliation fill:#e1f5ff
     style Processes fill:#f0f0f0
@@ -58,45 +79,68 @@ graph TB
 ```
 
 **Status Flow**:
-1. **Local Processes**: `ProcessStatusMonitor` polls every 5s → `StatusUpdateService`
-2. **Docker Containers**: Docker daemon watches events → POST `/api/status/updates` → `StatusController` → `StatusUpdateService`
-3. **AKS Pods**: AKS daemon watches K8s events → POST `/api/status/updates` → `StatusController` → `StatusUpdateService`
-4. **Status Buffer**: `StatusUpdateService` maintains rolling buffer of last 1000 changes
-5. **Reconciliation**: Polls GET `/api/status/recent-changes` for configuration changes
+1. **Local Processes**: ProcessMonitorWorker polls every 10s → publishes InstanceStatusChangedEvent to `instance.events`
+2. **Docker Containers**: Docker daemon watches events → POST `/api/status/updates` → StatusController → StatusUpdateService
+3. **AKS Pods**: AKS daemon watches K8s events → POST `/api/status/updates` → StatusController → StatusUpdateService
+4. **Status Buffer**: StatusUpdateService maintains rolling buffer of last 1000 changes
+5. **Reconciliation**: Can subscribe to `instance.events` for real-time updates AND/OR poll GET `/api/status/recent-changes`
 
-## Process Monitoring (Polling)
+## Process Monitoring (Worker-Based)
 
-**Implementation**: `ProcessStatusMonitor`
+**Implementation**: DRaaS.Workers.Platform.Process service
 
-The control plane directly monitors local processes:
+The Process platform uses a dedicated worker service that runs separately from the ControlPlane API. This worker monitors local processes and communicates via Redis message bus.
+
+### ProcessMonitorWorker
+
+Runs as a BackgroundService that continuously monitors process health:
 
 ```csharp
-// Runs in background task
-while (!cancellationToken.IsCancellationRequested)
+// Worker implementation
+protected override async Task ExecuteAsync(CancellationToken stoppingToken)
 {
-    foreach (var instance in processInstances)
+    while (!stoppingToken.IsCancellationRequested)
     {
-        if (process.HasExited)
+        foreach (var (instanceId, process) in _instanceManager.TrackedProcesses)
         {
-            await _statusUpdateService.PublishStatusUpdateAsync(
-                instanceId, 
-                InstanceStatus.Stopped, 
-                "ProcessMonitor");
+            if (process.HasExited)
+            {
+                // Update runtime store
+                var updatedInfo = runtimeInfo with
+                {
+                    Status = InstanceStatus.Error,
+                    StoppedAt = DateTime.UtcNow
+                };
+                await _runtimeStore.SaveAsync(updatedInfo);
+
+                // Publish status change event to message bus
+                await _messageBus.PublishAsync(
+                    Channels.InstanceEvents,
+                    new InstanceStatusChangedEvent
+                    {
+                        InstanceId = instanceId,
+                        OldStatus = InstanceStatus.Running,
+                        NewStatus = InstanceStatus.Error,
+                        Source = "ProcessMonitorWorker"
+                    });
+            }
         }
+        await Task.Delay(TimeSpan.FromSeconds(10), stoppingToken);
     }
-    await Task.Delay(TimeSpan.FromSeconds(5));
 }
 ```
 
 **Advantages**:
-- Direct access to process objects
-- Immediate detection of crashes
-- No external dependencies
+- Decoupled from ControlPlane API (runs as separate process)
+- Direct access to process objects via ProcessInstanceManager
+- Can scale independently (run on different machine if needed)
+- Uses message bus for event notifications
+- Resilient to ControlPlane restarts
 
-**Limitations**:
-- Only works for local processes
-- Polling overhead (mitigated by 5s intervals)
-- State lost on control plane restart
+**Configuration**:
+- Polling interval: 10 seconds (configurable)
+- Publishes to: `instance.events` channel
+- Requires: Redis connection, IInstanceRuntimeStore access
 
 ## Docker Daemon (Push-Based)
 
@@ -292,20 +336,26 @@ subjects:
 
 ## Status Flow
 
-### Process (Polling)
+### Process (Worker-Based)
 ```
-Process crashes
+Process crashes or exits
     ↓
-ProcessMonitor detects (next poll cycle ~5s)
+ProcessMonitorWorker detects (next poll cycle ~10s)
     ↓
-statusUpdateService.PublishStatusUpdateAsync()
+Update IInstanceRuntimeStore
     ↓
-StatusChanged event raised
+Publish InstanceStatusChangedEvent to instance.events channel
     ↓
-Runtime store updated
+Redis Message Bus
+    ↓
+Subscribers receive event:
+    - Reconciliation service (for auto-recovery)
+    - Logging service (for audit trails)
+    - Monitoring dashboard (for real-time updates)
+    - Other interested services
 ```
 
-### Docker/AKS (Push)
+### Docker/AKS (Daemon-Based)
 ```
 Container/Pod status changes
     ↓
@@ -313,25 +363,71 @@ Docker/K8s event emitted
     ↓
 External daemon receives event
     ↓
-POST /api/status/updates
+POST /api/status/updates (HTTP)
     ↓
 StatusController receives request
     ↓
 statusUpdateService.PublishStatusUpdateAsync()
     ↓
-StatusChanged event raised
+StatusChanged event raised (in-process)
     ↓
 Runtime store updated
+    ↓
+Status buffer updated (for polling reconciliation)
 ```
+
+**Key Differences**:
+- Process platform uses message bus for event distribution (pub/sub via Redis)
+- Docker/AKS platforms use HTTP API for status updates (request/response)
+- Process events can be subscribed to by multiple services via Redis channels
+- Docker/AKS updates flow through ControlPlane StatusController centrally
 
 ## Event Subscription
 
-Applications can subscribe to status changes:
+### Message Bus Subscription (Process Platform)
+
+Services can subscribe to events via the message bus:
 
 ```csharp
-public class StatusNotificationService
+public class StatusNotificationService : BackgroundService
 {
-    public StatusNotificationService(IStatusUpdateService statusUpdateService)
+    private readonly IMessageBus _messageBus;
+
+    public StatusNotificationService(IMessageBus messageBus)
+    {
+        _messageBus = messageBus;
+    }
+
+    protected override async Task ExecuteAsync(CancellationToken stoppingToken)
+    {
+        await _messageBus.SubscribeAsync<InstanceStatusChangedEvent>(
+            Channels.InstanceEvents,
+            async (evt) =>
+            {
+                Console.WriteLine($"Instance {evt.InstanceId}: {evt.OldStatus} → {evt.NewStatus}");
+                Console.WriteLine($"Source: {evt.Source}");
+
+                // Can trigger:
+                // - Logging to external systems
+                // - Notifications (email, Slack, Teams)
+                // - Auto-restart policies
+                // - Metrics collection
+                // - Alert generation
+                // - UI updates via SignalR
+            },
+            stoppingToken);
+    }
+}
+```
+
+### In-Process Subscription (ControlPlane)
+
+For services running within the ControlPlane process:
+
+```csharp
+public class InProcessStatusNotifier
+{
+    public InProcessStatusNotifier(IStatusUpdateService statusUpdateService)
     {
         statusUpdateService.StatusChanged += OnStatusChanged;
     }
@@ -340,25 +436,24 @@ public class StatusNotificationService
     {
         Console.WriteLine($"Instance {e.InstanceId}: {e.OldStatus} → {e.NewStatus}");
         Console.WriteLine($"Source: {e.Source} at {e.Timestamp}");
-        
-        // Can trigger:
-        // - Logging
-        // - Notifications (email, Slack, Teams)
-        // - Auto-restart policies
-        // - Metrics collection
-        // - UI updates via SignalR
     }
 }
 ```
 
 ## Daemon Configuration
 
-Both daemons require:
+Docker and AKS daemons require:
 
-1. **Control Plane URL**: Where to push updates
+1. **Control Plane URL**: Where to push status updates
 2. **Authentication**: API key or certificate for StatusController
 3. **Label Filters**: Which containers/pods to monitor
 4. **Retry Policy**: Handle network failures gracefully
+
+For Process platform workers:
+
+1. **Redis Connection**: Connection string for message bus
+2. **Polling Interval**: How often to check process health (default: 10s)
+3. **Runtime Store**: Shared state for instance information
 
 ## Security Considerations
 
@@ -380,20 +475,25 @@ public async Task<IActionResult> ReceiveStatusUpdate([FromBody] StatusUpdateRequ
 3. **IP Allowlisting**: Restrict StatusController to known daemon IPs
 4. **Rate Limiting**: Prevent flooding from rogue daemons
 
-## Benefits of This Architecture
+## Monitoring Architecture Comparison
 
-| Aspect | Process (Polling) | Docker/AKS (Push) |
-|--------|------------------|-------------------|
-| **Latency** | 5s average | Near real-time (~100ms) |
-| **Network Overhead** | None | Minimal (event-driven) |
-| **Scalability** | Limited to local machine | Scales to 1000s of instances |
-| **State Persistence** | Lost on restart | Daemon can resync on startup |
-| **Deployment** | Built-in | Requires daemon deployment |
+| Aspect | Process (Worker-Based) | Docker/AKS (Daemon-Based) |
+|--------|----------------------|---------------------------|
+| **Communication** | Redis Pub/Sub (message bus) | HTTP API (request/response) |
+| **Latency** | 10s polling interval | Near real-time (~100ms) |
+| **Network Overhead** | Redis messaging | HTTP requests |
+| **Scalability** | Distributed workers per machine | Scales to 1000s of instances |
+| **Event Distribution** | Pub/sub to multiple subscribers | Centralized through API |
+| **Deployment** | Worker service per host | Daemon deployment required |
+| **Coordination** | Via shared RuntimeStore | Via API calls |
 
 ## Future Enhancements
 
-1. **Status Webhooks**: Allow users to subscribe to status changes
-2. **SignalR Hub**: Real-time UI updates
-3. **Auto-Restart Policies**: Automatically restart failed instances
-4. **Health Probes**: Daemons can call health endpoints
-5. **Distributed Tracing**: Correlate status updates across systems
+1. **Status Webhooks**: Allow users to subscribe to status changes via HTTP callbacks
+2. **SignalR Hub**: Real-time UI updates for browser-based dashboards
+3. **Auto-Restart Policies**: Automatically restart failed instances with configurable strategies
+4. **Health Probes**: Daemons can call HTTP health endpoints beyond process checks
+5. **Distributed Tracing**: Correlate status updates across systems with trace IDs
+6. **Unified Message Bus**: Migrate Docker/AKS daemons to use message bus instead of HTTP API
+7. **Dead Letter Queue**: Handle failed event processing with retry and dead letter queues
+8. **Event Replay**: Replay historical events for debugging and recovery scenarios

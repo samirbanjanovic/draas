@@ -28,15 +28,47 @@ DRaaS.Core/
 │   ├── ServerConfiguration.cs       # Server settings (host, port, log level)
 │   └── Source.cs                    # Data source definitions
 │
+├── Messaging/                       # Message Bus Infrastructure
+│   ├── IMessageBus.cs               # Message bus abstraction
+│   ├── RedisMessageBus.cs           # Redis Pub/Sub implementation
+│   ├── Channels.cs                  # Channel name constants
+│   ├── Messages.cs                  # Base message types
+│   ├── Commands/                    # Command messages
+│   │   ├── InstanceCommands.cs      # Start, Stop, Restart, Delete
+│   │   └── ConfigurationCommands.cs # Configuration operations
+│   ├── Events/                      # Event messages
+│   │   ├── InstanceEvents.cs        # Instance lifecycle events
+│   │   └── ConfigurationEvents.cs   # Configuration change events
+│   └── Responses/                   # Response messages
+│       └── InstanceCommandResponses.cs # Operation results
+│
 ├── Services/                        # Business Logic Services
-│   ├── IDrasiInstanceService.cs     # Instance lifecycle management interface
-│   ├── DrasiInstanceService.cs      # Instance lifecycle implementation
-│   ├── IInstanceManagerFactory.cs   # Platform manager factory interface
-│   ├── InstanceManagerFactory.cs    # Platform manager factory implementation
-│   ├── IInstanceRuntimeStore.cs     # Runtime state storage interface
-│   ├── InMemoryInstanceRuntimeStore.cs  # In-memory runtime storage
-│   ├── IPlatformOrchestratorService.cs  # Platform selection & resource allocation interface
-│   └── PlatformOrchestratorService.cs   # Platform orchestration implementation
+│   ├── Instance/                    # Instance lifecycle management
+│   │   ├── IDrasiInstanceService.cs
+│   │   └── DrasiInstanceService.cs
+│   ├── Storage/                     # Runtime state persistence
+│   │   ├── IInstanceRuntimeStore.cs
+│   │   └── InMemoryInstanceRuntimeStore.cs
+│   ├── ResourceAllocation/          # Port and resource management
+│   │   ├── IPortAllocator.cs
+│   │   └── PortAllocator.cs
+│   ├── Monitoring/                  # Status monitoring and events
+│   │   ├── IStatusUpdateService.cs
+│   │   ├── StatusUpdateService.cs
+│   │   ├── IStatusMonitor.cs
+│   │   └── ProcessStatusMonitor.cs
+│   ├── Orchestration/               # Platform selection and coordination
+│   │   ├── IPlatformOrchestratorService.cs
+│   │   └── PlatformOrchestratorService.cs
+│   ├── Reconciliation/              # Desired state reconciliation
+│   │   ├── IReconciliationService.cs
+│   │   ├── IConfigurationStateStore.cs
+│   │   ├── ReconciliationStrategy.cs
+│   │   ├── DriftDetectionResult.cs
+│   │   └── ReconciliationOptions.cs
+│   └── Factory/                     # Factory patterns
+│       ├── IInstanceManagerFactory.cs
+│       └── InstanceManagerFactory.cs
 │
 └── Providers/                       # Platform Integration Providers
     ├── IDrasiServerConfigurationProvider.cs     # Configuration management interface
@@ -58,22 +90,40 @@ Pure domain models with no external dependencies. These represent the core busin
 - **ServerConfiguration**: Server-specific settings (host, port, log level)
 - **InstanceRuntimeInfo**: Runtime state (container IDs, process IDs, pod names, etc.)
 
-### 2. **Services** (Business Logic Layer)
+### 2. **Messaging** (Communication Layer)
+Message bus infrastructure for distributed communication between components:
+
+- **IMessageBus**: Abstraction for pub/sub messaging
+- **RedisMessageBus**: Redis Pub/Sub implementation with request/response support
+- **Channels**: Centralized channel name management with platform-specific routing
+- **Commands**: Instance and configuration command messages (StartInstance, StopInstance, etc.)
+- **Events**: Lifecycle and status event messages (InstanceStarted, InstanceStopped, etc.)
+- **Responses**: Command response messages for request/response pattern
+
+**Message Flow**:
+- Platform workers subscribe to command channels (e.g., `instance.commands.process`)
+- Workers publish events to broadcast channels (e.g., `instance.events`)
+- Request/response pattern uses temporary reply channels for synchronous operations
+- All messages include correlation IDs for tracing
+
+### 3. **Services** (Business Logic Layer)
 Core business logic that orchestrates instance and configuration management:
 
 - **DrasiInstanceService**: CRUD operations for instance metadata
 - **PlatformOrchestratorService**: Automatic platform selection and resource allocation
 - **InstanceManagerFactory**: Returns appropriate platform manager based on PlatformType
 - **IInstanceRuntimeStore**: Abstraction for storing runtime state (pluggable: InMemory, Cosmos, SQL, Redis)
+- **StatusUpdateService**: Centralized status change event bus
+- **ProcessStatusMonitor**: Polling-based monitoring for local processes
 
-### 3. **Providers** (Integration Layer)
+### 4. **Providers** (Integration Layer)
 Platform-specific implementations for launching and managing Drasi servers:
 
 - **ProcessInstanceManager**: Manages bare metal OS processes
   - Launches drasi-server as a local process
   - Generates YAML configuration files from stored Configuration objects
   - Configurable via `ProcessInstanceManagerOptions` (executable path, directories, timeouts)
-  - Monitors process health via polling
+  - Used by worker services for actual process management
 - **DockerInstanceManager**: Manages Docker containers
 - **AksInstanceManager**: Manages Kubernetes deployments in AKS
 - **DrasiServerConfigurationProvider**: Manages configuration files (YAML serialization)
@@ -251,7 +301,8 @@ public class AzureContainerAppsManager : IDrasiServerInstanceManager
 
 ## Dependencies
 
-- **YamlDotNet**: YAML serialization/deserialization
+- **StackExchange.Redis**: Redis client for message bus communication
+- **YamlDotNet**: YAML serialization/deserialization for drasi-server configs
 - **Microsoft.AspNetCore.JsonPatch**: JSON Patch support for configuration updates
 - **.NET 10**: Target framework
 
