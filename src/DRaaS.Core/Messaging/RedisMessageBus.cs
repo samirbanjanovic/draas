@@ -1,8 +1,18 @@
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using Microsoft.Extensions.Logging;
 using StackExchange.Redis;
 
 namespace DRaaS.Core.Messaging;
+
+/// <summary>
+/// Wrapper for request/response pattern messages.
+/// </summary>
+internal class RequestWrapper<T>
+{
+    public T? Request { get; set; }
+    public string? ReplyChannel { get; set; }
+}
 
 /// <summary>
 /// Redis-based message bus implementation using Pub/Sub.
@@ -63,18 +73,54 @@ public class RedisMessageBus : IMessageBus, IAsyncDisposable
                             return;
                         }
 
-                        var message = JsonSerializer.Deserialize<T>((string)json!);
+                        string? replyChannel = null;
+                        T? message = null;
+
+                        // Try to deserialize as wrapped request first
+                        try
+                        {
+                            var jsonNode = JsonNode.Parse((string)json!);
+                            if (jsonNode?["Request"] != null && jsonNode["ReplyChannel"] != null)
+                            {
+                                // This is a wrapped request/response message
+                                replyChannel = jsonNode["ReplyChannel"]?.GetValue<string>();
+                                message = jsonNode["Request"]?.Deserialize<T>();
+
+                                _logger.LogDebug(
+                                    "Received request {MessageType} on channel '{Channel}' with reply channel '{ReplyChannel}'",
+                                    typeof(T).Name,
+                                    channel,
+                                    replyChannel);
+                            }
+                        }
+                        catch
+                        {
+                            // Not a wrapped message, try normal deserialization
+                        }
+
+                        // If not wrapped, deserialize normally
+                        if (message == null)
+                        {
+                            message = JsonSerializer.Deserialize<T>((string)json!);
+
+                            _logger.LogDebug(
+                                "Received {MessageType} on channel '{Channel}' (MessageId: {MessageId})",
+                                typeof(T).Name,
+                                channel,
+                                (message as Message)?.MessageId);
+                        }
+
                         if (message == null)
                         {
                             _logger.LogWarning("Failed to deserialize message on channel '{Channel}'", channel);
                             return;
                         }
 
-                        _logger.LogDebug(
-                            "Received {MessageType} on channel '{Channel}' (MessageId: {MessageId})",
-                            typeof(T).Name,
-                            channel,
-                            (message as Message)?.MessageId);
+                        // If message has ReplyChannel property, set it
+                        if (message is Message msg && !string.IsNullOrEmpty(replyChannel))
+                        {
+                            message = (T)(object)(msg with { ReplyChannel = replyChannel });
+                        }
 
                         await handler(message);
                     }
@@ -121,8 +167,23 @@ public class RedisMessageBus : IMessageBus, IAsyncDisposable
 
         try
         {
-            // Publish request
-            await PublishAsync(channel, request, cancellationToken);
+            // Wrap the request with reply channel information
+            var requestWithReply = new
+            {
+                Request = request,
+                ReplyChannel = responseChannel
+            };
+
+            // Serialize and publish the wrapped request
+            var subscriber = _redis.GetSubscriber();
+            var json = JsonSerializer.Serialize(requestWithReply);
+            await subscriber.PublishAsync(RedisChannel.Literal(channel), json);
+
+            _logger.LogDebug(
+                "Sent request {MessageType} to channel '{Channel}', waiting for response on '{ResponseChannel}'",
+                typeof(TRequest).Name,
+                channel,
+                responseChannel);
 
             // Wait for response with timeout
             using var cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
@@ -134,6 +195,11 @@ public class RedisMessageBus : IMessageBus, IAsyncDisposable
             }
             catch (OperationCanceledException)
             {
+                _logger.LogWarning(
+                    "Request {MessageType} to channel '{Channel}' timed out after {Timeout}",
+                    typeof(TRequest).Name,
+                    channel,
+                    timeout);
                 throw new TimeoutException($"Request to channel '{channel}' timed out after {timeout}");
             }
         }
@@ -142,6 +208,7 @@ public class RedisMessageBus : IMessageBus, IAsyncDisposable
             // Unsubscribe from response channel
             var subscriber = _redis.GetSubscriber();
             await subscriber.UnsubscribeAsync(RedisChannel.Literal(responseChannel));
+            _subscribers.Remove(responseChannel);
         }
     }
 

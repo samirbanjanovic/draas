@@ -1,42 +1,38 @@
 using DRaaS.Core.Models;
+using DRaaS.Core.Providers;
 using DRaaS.Core.Services.Storage;
 using DRaaS.Core.Services.ResourceAllocation;
 
-namespace DRaaS.Core.Providers.InstanceManagers;
+namespace DRaaS.Workers.Platform.AKS;
 
-public class DockerInstanceManager : IDrasiServerInstanceManager
+public class AksInstanceManager : IDrasiServerInstanceManager
 {
     private readonly IInstanceRuntimeStore _runtimeStore;
 
-    public DockerInstanceManager(IInstanceRuntimeStore runtimeStore)
+    public AksInstanceManager(IInstanceRuntimeStore runtimeStore)
     {
         _runtimeStore = runtimeStore;
     }
 
-    public string PlatformType => "Docker";
+    public string PlatformType => "AKS";
 
     public async Task<InstanceRuntimeInfo> StartInstanceAsync(string instanceId, Configuration configuration)
     {
-        // TODO: Implement Docker container creation and startup
-        // 1. Build Docker run command with configuration
-        // 2. Map ports (configuration.Port)
-        // 3. Set environment variables (HOST, LOG_LEVEL)
-        // 4. Mount configuration file as volume
-        // 5. Execute docker run command
-        // 6. Capture container ID
-
+        // TODO: Implement Kubernetes deployment creation
         var runtimeInfo = new InstanceRuntimeInfo
         {
             InstanceId = instanceId,
             Status = InstanceStatus.Running,
             StartedAt = DateTime.UtcNow,
-            ContainerId = $"docker-{Guid.NewGuid():N}",
+            PodName = $"drasi-{instanceId.ToLower()}",
+            Namespace = "drasi-instances",
             RuntimeMetadata = new Dictionary<string, string>
             {
                 ["PlatformType"] = PlatformType,
-                ["Image"] = "drasi/server:latest",
-                ["Port"] = configuration.Port?.ToString() ?? "8080",
-                ["Host"] = configuration.Host ?? "0.0.0.0"
+                ["ClusterName"] = "drasi-aks-cluster",
+                ["DeploymentName"] = $"drasi-{instanceId.ToLower()}",
+                ["ServiceName"] = $"drasi-svc-{instanceId.ToLower()}",
+                ["Port"] = configuration.Port?.ToString() ?? "8080"
             }
         };
 
@@ -46,11 +42,6 @@ public class DockerInstanceManager : IDrasiServerInstanceManager
 
     public async Task<InstanceRuntimeInfo> StopInstanceAsync(string instanceId)
     {
-        // TODO: Implement Docker container stop
-        // 1. Get container ID from runtime info
-        // 2. Execute docker stop command
-        // 3. Optionally docker rm to clean up
-
         var runtimeInfo = await _runtimeStore.GetAsync(instanceId);
         if (runtimeInfo == null)
         {
@@ -69,29 +60,27 @@ public class DockerInstanceManager : IDrasiServerInstanceManager
 
     public async Task<InstanceRuntimeInfo> RestartInstanceAsync(string instanceId)
     {
-        // TODO: Implement Docker container restart
-        // Option 1: docker restart <container-id>
-        // Option 2: Stop then Start
-
-        await StopInstanceAsync(instanceId);
-
         var info = await _runtimeStore.GetAsync(instanceId);
         if (info == null)
         {
             throw new KeyNotFoundException($"Instance '{instanceId}' not found");
         }
 
-        // Need to get configuration to restart - this should be passed or retrieved
-        throw new NotImplementedException("RestartInstanceAsync requires configuration retrieval");
+        var restartedInfo = info with
+        {
+            StartedAt = DateTime.UtcNow,
+            RuntimeMetadata = new Dictionary<string, string>(info.RuntimeMetadata)
+            {
+                ["LastRestart"] = DateTime.UtcNow.ToString("o")
+            }
+        };
+
+        await _runtimeStore.SaveAsync(restartedInfo);
+        return restartedInfo;
     }
 
     public async Task<InstanceRuntimeInfo> GetInstanceStatusAsync(string instanceId)
     {
-        // TODO: Implement Docker container status check
-        // 1. Execute docker ps -a --filter id=<container-id>
-        // 2. Parse status (running, stopped, exited, etc.)
-        // 3. Update runtime info
-
         var runtimeInfo = await _runtimeStore.GetAsync(instanceId);
         if (runtimeInfo == null)
         {
@@ -103,26 +92,20 @@ public class DockerInstanceManager : IDrasiServerInstanceManager
 
     public async Task<IEnumerable<InstanceRuntimeInfo>> GetAllInstanceStatusesAsync()
     {
-        // TODO: Query all Docker containers with drasi label/tag
-        return await _runtimeStore.GetByPlatformAsync(Models.PlatformType.Docker);
+        return await _runtimeStore.GetByPlatformAsync(DRaaS.Core.Models.PlatformType.AKS);
     }
 
     public Task<bool> IsAvailableAsync()
     {
-        // TODO: Check if Docker is installed and running
-        // Execute: docker --version or docker info
-        return Task.FromResult(true); // Stub: assume available
+        return Task.FromResult(true);
     }
 
     public Task<ServerConfiguration> AllocateResourcesAsync(IPortAllocator portAllocator)
     {
-        // Docker containers can bind to 0.0.0.0 and use port mapping
-        var port = portAllocator.AllocatePort();
-
         var config = new ServerConfiguration
         {
-            Host = "0.0.0.0", // Docker allows binding to all interfaces
-            Port = port,
+            Host = "0.0.0.0",
+            Port = 8080,
             LogLevel = "info"
         };
 

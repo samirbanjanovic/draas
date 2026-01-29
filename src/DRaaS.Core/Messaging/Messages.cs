@@ -19,6 +19,12 @@ public abstract record Message
     /// Correlation ID for tracking related messages.
     /// </summary>
     public string? CorrelationId { get; init; }
+
+    /// <summary>
+    /// Reply channel for request/response patterns.
+    /// Used by RequestAsync to specify where the response should be sent.
+    /// </summary>
+    public string? ReplyChannel { get; init; }
 }
 
 /// <summary>

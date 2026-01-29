@@ -1,18 +1,19 @@
 using System.Diagnostics;
 using System.Text;
-using DRaaS.Core.Models;
-using DRaaS.Core.Services.Storage;
-using DRaaS.Core.Services.ResourceAllocation;
 using System.Collections.Concurrent;
 using Microsoft.Extensions.Options;
+using DRaaS.Core.Models;
+using DRaaS.Core.Providers;
+using DRaaS.Core.Services.Storage;
+using DRaaS.Core.Services.ResourceAllocation;
 
-namespace DRaaS.Core.Providers.InstanceManagers;
+namespace DRaaS.Workers.Platform.Process;
 
 public class ProcessInstanceManager : IDrasiServerInstanceManager
 {
     private readonly IInstanceRuntimeStore _runtimeStore;
     private readonly ProcessInstanceManagerOptions _options;
-    private readonly ConcurrentDictionary<string, Process> _processes = new();
+    private readonly ConcurrentDictionary<string, System.Diagnostics.Process> _processes = new();
 
     public ProcessInstanceManager(
         IInstanceRuntimeStore runtimeStore,
@@ -31,7 +32,7 @@ public class ProcessInstanceManager : IDrasiServerInstanceManager
     /// <summary>
     /// Provides access to the process dictionary for the status monitor.
     /// </summary>
-    public ConcurrentDictionary<string, Process> TrackedProcesses => _processes;
+    public ConcurrentDictionary<string, System.Diagnostics.Process> TrackedProcesses => _processes;
 
     public async Task<InstanceRuntimeInfo> StartInstanceAsync(string instanceId, Configuration configuration)
     {
@@ -49,7 +50,7 @@ public class ProcessInstanceManager : IDrasiServerInstanceManager
             WorkingDirectory = _options.WorkingDirectory
         };
 
-        var process = new Process
+        var process = new System.Diagnostics.Process
         {
             StartInfo = processStartInfo
         };
@@ -179,7 +180,7 @@ public class ProcessInstanceManager : IDrasiServerInstanceManager
     public async Task<IEnumerable<InstanceRuntimeInfo>> GetAllInstanceStatusesAsync()
     {
         // Return all tracked processes
-        return await _runtimeStore.GetByPlatformAsync(Models.PlatformType.Process);
+        return await _runtimeStore.GetByPlatformAsync(DRaaS.Core.Models.PlatformType.Process);
     }
 
     public Task<bool> IsAvailableAsync()

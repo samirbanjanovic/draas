@@ -1,5 +1,7 @@
 using DRaaS.Core.Models;
 using DRaaS.Core.Services.Storage;
+using DRaaS.Core.Messaging;
+using DRaaS.Core.Messaging.Events;
 using System.Collections.Concurrent;
 
 namespace DRaaS.Core.Services.Monitoring;
@@ -7,17 +9,22 @@ namespace DRaaS.Core.Services.Monitoring;
 /// <summary>
 /// Centralized status update service that acts as a message bus for instance status changes.
 /// Receives updates from both local monitors (polling) and external daemons (push).
+/// Publishes status changes to Redis message bus for distributed communication.
 /// Maintains a rolling buffer of recent status changes for API polling.
 /// </summary>
 public class StatusUpdateService : IStatusUpdateService
 {
     private readonly IInstanceRuntimeStore _runtimeStore;
+    private readonly IMessageBus _messageBus;
     private readonly ConcurrentQueue<StatusChangeRecord> _recentChanges = new();
     private const int MaxRecentChanges = 1000; // Keep last 1000 changes
 
-    public StatusUpdateService(IInstanceRuntimeStore runtimeStore)
+    public StatusUpdateService(
+        IInstanceRuntimeStore runtimeStore,
+        IMessageBus messageBus)
     {
         _runtimeStore = runtimeStore;
+        _messageBus = messageBus;
     }
 
     public event EventHandler<StatusUpdateEventArgs>? StatusChanged;
@@ -80,7 +87,24 @@ public class StatusUpdateService : IStatusUpdateService
                 _recentChanges.TryDequeue(out _);
             }
 
-            // Raise event to notify subscribers
+            // Publish to Redis message bus for distributed communication
+            try
+            {
+                await _messageBus.PublishAsync(Channels.StatusEvents, new InstanceStatusChangedEvent
+                {
+                    InstanceId = instanceId,
+                    OldStatus = oldStatus,
+                    NewStatus = newStatus,
+                    Source = source
+                });
+            }
+            catch (Exception)
+            {
+                // Log error but don't fail the status update
+                // In-memory event will still be raised below
+            }
+
+            // Raise in-memory event to notify local subscribers
             StatusChanged?.Invoke(this, new StatusUpdateEventArgs
             {
                 InstanceId = instanceId,

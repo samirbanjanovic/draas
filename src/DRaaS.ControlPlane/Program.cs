@@ -1,16 +1,12 @@
 using DRaaS.Core.Providers;
-using DRaaS.Core.Providers.InstanceManagers;
 using DRaaS.Core.Services.Instance;
 using DRaaS.Core.Services.Storage;
-using DRaaS.Core.Services.ResourceAllocation;
 using DRaaS.Core.Services.Monitoring;
-using DRaaS.Core.Services.Orchestration;
-using DRaaS.Core.Services.Factory;
-using DRaaS.Core.Models;
+using DRaaS.Core.Messaging;
 using Scalar.AspNetCore;
-using YamlDotNet.Helpers;
 using YamlDotNet.Serialization;
 using YamlDotNet.Serialization.NamingConventions;
+using StackExchange.Redis;
 
 namespace DRaaS.ControlPlane;
 
@@ -24,106 +20,48 @@ public class Program
         builder.Services.AddControllers()
             .AddNewtonsoftJson(); // Required for JsonPatch support
 
+        // Configure Redis connection for message bus
+        var redisConnectionString = builder.Configuration.GetConnectionString("Redis") ?? "localhost:6379";
+        builder.Services.AddSingleton<IConnectionMultiplexer>(sp =>
+        {
+            return ConnectionMultiplexer.Connect(redisConnectionString);
+        });
 
+        // Configure message bus (core messaging infrastructure)
+        builder.Services.AddSingleton<IMessageBus, RedisMessageBus>();
+
+        // Configure YAML serializers for configuration management
         builder.Services.AddSingleton<IDeserializer>(sp =>
-                    new DeserializerBuilder()
-                            .WithNamingConvention(CamelCaseNamingConvention.Instance)
-                            .WithEnumNamingConvention(CamelCaseNamingConvention.Instance)
-                            .Build());
+            new DeserializerBuilder()
+                .WithNamingConvention(CamelCaseNamingConvention.Instance)
+                .WithEnumNamingConvention(CamelCaseNamingConvention.Instance)
+                .Build());
 
         builder.Services.AddSingleton(sp =>
-                    new SerializerBuilder()
-                            .WithNamingConvention(CamelCaseNamingConvention.Instance)
-                            .WithEnumNamingConvention(CamelCaseNamingConvention.Instance)
-                            .Build());
+            new SerializerBuilder()
+                .WithNamingConvention(CamelCaseNamingConvention.Instance)
+                .WithEnumNamingConvention(CamelCaseNamingConvention.Instance)
+                .Build());
 
-        // Register platform orchestrator (configure default platform here)
-        // Port allocator is shared across all managers via the orchestrator
-        builder.Services.AddSingleton<IPortAllocator, PortAllocator>();
-
-        // Register shared runtime store (singleton so all managers share the same store)
+        // Register shared runtime store for instance state
         builder.Services.AddSingleton<IInstanceRuntimeStore, InMemoryInstanceRuntimeStore>();
 
-        // Register instance service
+        // Register instance service for managing instance metadata
         builder.Services.AddSingleton<IDrasiInstanceService, DrasiInstanceService>();
 
-        // Configure ProcessInstanceManager options
-        builder.Services.Configure<ProcessInstanceManagerOptions>(
-            builder.Configuration.GetSection("ProcessInstanceManager"));
-
-        // Register instance managers (they all inject the shared runtime store)
-        builder.Services.AddSingleton<IDrasiServerInstanceManager, DockerInstanceManager>();
-        builder.Services.AddSingleton<IDrasiServerInstanceManager, AksInstanceManager>();
-        builder.Services.AddSingleton<IDrasiServerInstanceManager, ProcessInstanceManager>();
-
-        // Register instance manager factory
-        builder.Services.AddSingleton<IInstanceManagerFactory>(sp =>
-        {
-            var managers = sp.GetServices<IDrasiServerInstanceManager>();
-            return new InstanceManagerFactory(managers, PlatformType.Process); // Default to Process
-        });
-
-        // Register orchestrator (depends on port allocator and manager factory)
-        builder.Services.AddSingleton<IPlatformOrchestratorService>(sp =>
-        {
-            var portAllocator = sp.GetRequiredService<IPortAllocator>();
-            var managerFactory = sp.GetRequiredService<IInstanceManagerFactory>();
-            return new PlatformOrchestratorService(portAllocator, managerFactory, PlatformType.Process);
-        });
-
-        // Register configuration provider
+        // Register configuration provider for instance configurations
         builder.Services.AddSingleton<IDrasiServerConfigurationProvider, DrasiServerConfigurationProvider>();
 
-        // Register status update service (centralized status bus)
+        // Register status update service for status change notifications
         builder.Services.AddSingleton<IStatusUpdateService, StatusUpdateService>();
 
-        // Register process status monitor (polls local processes)
-        builder.Services.AddSingleton<IStatusMonitor>(sp =>
-        {
-            var runtimeStore = sp.GetRequiredService<IInstanceRuntimeStore>();
-            var statusUpdateService = sp.GetRequiredService<IStatusUpdateService>();
-
-            // Get the ProcessInstanceManager to access its tracked processes
-            var processManager = sp.GetServices<IDrasiServerInstanceManager>()
-                .OfType<ProcessInstanceManager>()
-                .FirstOrDefault();
-
-            if (processManager == null)
-            {
-                throw new InvalidOperationException("ProcessInstanceManager not registered");
-            }
-
-            return new ProcessStatusMonitor(
-                runtimeStore,
-                statusUpdateService,
-                processManager.TrackedProcesses);
-        });
+        // Register event subscription service to receive events from workers
+        builder.Services.AddHostedService<DRaaS.ControlPlane.Services.EventSubscriptionService>();
 
         // Learn more about configuring OpenAPI at https://aka.ms/aspnet/openapi
         builder.Services.AddOpenApi();
 
-        // OPTIONAL: Enable in-process reconciliation
-        // Uncomment the following lines to run reconciliation in the same process as the Web API
-        // For production, run DRaaS.Reconciliation as a separate service
-        /*
-        builder.Services.Configure<DRaaS.Core.Services.Reconciliation.ReconciliationOptions>(
-            builder.Configuration.GetSection("Reconciliation"));
-
-        builder.Services.AddSingleton<DRaaS.Core.Services.Reconciliation.IConfigurationStateStore, DRaaS.Reconciliation.ConfigurationStateStore>();
-        builder.Services.AddSingleton<DRaaS.Reconciliation.Strategies.IReconciliationStrategy, DRaaS.Reconciliation.Strategies.RestartReconciliationStrategy>();
-        builder.Services.AddSingleton<DRaaS.Core.Services.Reconciliation.IReconciliationService, DRaaS.Reconciliation.ReconciliationService>();
-        builder.Services.AddHostedService<DRaaS.Reconciliation.ReconciliationBackgroundService>();
-        */
-
         var app = builder.Build();
-
-        // Start status monitoring for polling-based platforms (Process)
-        var statusMonitor = app.Services.GetRequiredService<IStatusMonitor>();
-        if (statusMonitor.RequiresPolling)
-        {
-            var lifetime = app.Services.GetRequiredService<IHostApplicationLifetime>();
-            _ = statusMonitor.StartMonitoringAsync(lifetime.ApplicationStopping);
-        }
 
         // Configure the HTTP request pipeline.
         if (app.Environment.IsDevelopment())

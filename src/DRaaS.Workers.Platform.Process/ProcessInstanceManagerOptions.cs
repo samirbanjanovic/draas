@@ -1,4 +1,4 @@
-namespace DRaaS.Core.Providers.InstanceManagers;
+namespace DRaaS.Workers.Platform.Process;
 
 /// <summary>
 /// Configuration options for ProcessInstanceManager.

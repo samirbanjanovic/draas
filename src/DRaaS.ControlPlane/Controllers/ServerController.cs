@@ -1,8 +1,9 @@
 ﻿using DRaaS.Core.Models;
 using DRaaS.Core.Providers;
 using DRaaS.Core.Services.Instance;
-using DRaaS.Core.Services.Orchestration;
-using DRaaS.Core.Services.Factory;
+using DRaaS.Core.Messaging;
+using DRaaS.Core.Messaging.Commands;
+using DRaaS.Core.Messaging.Responses;
 using DRaaS.ControlPlane.DTOs;
 using Microsoft.AspNetCore.JsonPatch;
 using Microsoft.AspNetCore.Mvc;
@@ -15,16 +16,16 @@ public class ServerController : ControllerBase
 {
     private readonly IDrasiInstanceService _instanceService;
     private readonly IDrasiServerConfigurationProvider _configurationProvider;
-    private readonly IInstanceManagerFactory _managerFactory;
+    private readonly IMessageBus _messageBus;
 
     public ServerController(
         IDrasiInstanceService instanceService,
         IDrasiServerConfigurationProvider configurationProvider,
-        IInstanceManagerFactory managerFactory)
+        IMessageBus messageBus)
     {
         _instanceService = instanceService;
         _configurationProvider = configurationProvider;
-        _managerFactory = managerFactory;
+        _messageBus = messageBus;
     }
 
     // Instance Management
@@ -65,16 +66,51 @@ public class ServerController : ControllerBase
     [Route("instances/{instanceId}")]
     public async Task<IActionResult> DeleteInstance(string instanceId)
     {
-        // Delete configuration first
-        await _configurationProvider.DeleteConfigurationAsync(instanceId);
-
-        // Then delete instance
-        var deleted = await _instanceService.DeleteInstanceAsync(instanceId);
-        if (!deleted)
+        try
         {
-            return NotFound($"Instance '{instanceId}' not found");
+            var instance = await _instanceService.GetInstanceAsync(instanceId);
+            if (instance == null)
+            {
+                return NotFound($"Instance '{instanceId}' not found");
+            }
+
+            // Route to appropriate platform worker via message bus to cleanup running instance
+            if (instance.PlatformType == PlatformType.Process || 
+                instance.PlatformType == PlatformType.Docker ||
+                instance.PlatformType == PlatformType.AKS)
+            {
+                var command = new DeleteInstanceCommand
+                {
+                    InstanceId = instanceId
+                };
+
+                var response = await _messageBus.RequestAsync<DeleteInstanceCommand, DeleteInstanceResponse>(
+                    Channels.GetInstanceCommandChannel(instance.PlatformType),
+                    command,
+                    timeout: TimeSpan.FromSeconds(30));
+
+                if (response?.Success != true)
+                {
+                    return StatusCode(500, new { error = response?.ErrorMessage ?? "Failed to cleanup running instance" });
+                }
+            }
+
+            // Delete configuration
+            await _configurationProvider.DeleteConfigurationAsync(instanceId);
+
+            // Delete instance metadata
+            var deleted = await _instanceService.DeleteInstanceAsync(instanceId);
+            if (!deleted)
+            {
+                return NotFound($"Instance '{instanceId}' not found");
+            }
+
+            return NoContent();
         }
-        return NoContent();
+        catch (Exception ex)
+        {
+            return StatusCode(500, $"Failed to delete instance: {ex.Message}");
+        }
     }
 
     [HttpPut]
@@ -173,20 +209,36 @@ public class ServerController : ControllerBase
                 return BadRequest("No configuration available for instance");
             }
 
-            // Get the appropriate manager for the platform
-            var manager = _managerFactory.GetManager(instance.PlatformType);
-            if (manager == null)
+            // Route to appropriate platform worker via message bus
+            if (instance.PlatformType == PlatformType.Process || 
+                instance.PlatformType == PlatformType.Docker ||
+                instance.PlatformType == PlatformType.AKS)
             {
-                return BadRequest($"No manager found for platform '{instance.PlatformType}'");
+                var command = new StartInstanceCommand
+                {
+                    InstanceId = instanceId,
+                    Configuration = config
+                };
+
+                var response = await _messageBus.RequestAsync<StartInstanceCommand, StartInstanceResponse>(
+                    Channels.GetInstanceCommandChannel(instance.PlatformType),
+                    command,
+                    timeout: TimeSpan.FromSeconds(30));
+
+                if (response?.Success == true)
+                {
+                    await _instanceService.UpdateInstanceStatusAsync(instanceId, InstanceStatus.Running);
+                    return Ok(new { message = $"Instance '{instanceId}' started successfully", runtimeInfo = response.RuntimeInfo });
+                }
+                else
+                {
+                    return StatusCode(500, new { error = response?.ErrorMessage ?? "Operation timed out" });
+                }
             }
-
-            // Start the instance
-            await manager.StartInstanceAsync(instanceId, config);
-
-            // Update status
-            await _instanceService.UpdateInstanceStatusAsync(instanceId, InstanceStatus.Running);
-
-            return Ok($"Instance '{instanceId}' started successfully");
+            else
+            {
+                return BadRequest($"Unsupported platform type '{instance.PlatformType}'");
+            }
         }
         catch (Exception ex)
         {
@@ -206,20 +258,35 @@ public class ServerController : ControllerBase
                 return NotFound($"Instance '{instanceId}' not found");
             }
 
-            // Get the appropriate manager for the platform
-            var manager = _managerFactory.GetManager(instance.PlatformType);
-            if (manager == null)
+            // Route to appropriate platform worker via message bus
+            if (instance.PlatformType == PlatformType.Process || 
+                instance.PlatformType == PlatformType.Docker ||
+                instance.PlatformType == PlatformType.AKS)
             {
-                return BadRequest($"No manager found for platform '{instance.PlatformType}'");
+                var command = new StopInstanceCommand
+                {
+                    InstanceId = instanceId
+                };
+
+                var response = await _messageBus.RequestAsync<StopInstanceCommand, StopInstanceResponse>(
+                    Channels.GetInstanceCommandChannel(instance.PlatformType),
+                    command,
+                    timeout: TimeSpan.FromSeconds(30));
+
+                if (response?.Success == true)
+                {
+                    await _instanceService.UpdateInstanceStatusAsync(instanceId, InstanceStatus.Stopped);
+                    return Ok(new { message = $"Instance '{instanceId}' stopped successfully", runtimeInfo = response.RuntimeInfo });
+                }
+                else
+                {
+                    return StatusCode(500, new { error = response?.ErrorMessage ?? "Operation timed out" });
+                }
             }
-
-            // Stop the instance
-            await manager.StopInstanceAsync(instanceId);
-
-            // Update status
-            await _instanceService.UpdateInstanceStatusAsync(instanceId, InstanceStatus.Stopped);
-
-            return Ok($"Instance '{instanceId}' stopped successfully");
+            else
+            {
+                return BadRequest($"Unsupported platform type '{instance.PlatformType}'");
+            }
         }
         catch (Exception ex)
         {
@@ -246,26 +313,58 @@ public class ServerController : ControllerBase
                 return BadRequest("No configuration available for instance");
             }
 
-            // Get the appropriate manager for the platform
-            var manager = _managerFactory.GetManager(instance.PlatformType);
-            if (manager == null)
+            // Route to appropriate platform worker via message bus
+            if (instance.PlatformType == PlatformType.Process || 
+                instance.PlatformType == PlatformType.Docker ||
+                instance.PlatformType == PlatformType.AKS)
             {
-                return BadRequest($"No manager found for platform '{instance.PlatformType}'");
+                var channel = Channels.GetInstanceCommandChannel(instance.PlatformType);
+
+                // Stop the instance first
+                var stopCommand = new StopInstanceCommand
+                {
+                    InstanceId = instanceId
+                };
+
+                var stopResponse = await _messageBus.RequestAsync<StopInstanceCommand, StopInstanceResponse>(
+                    channel,
+                    stopCommand,
+                    timeout: TimeSpan.FromSeconds(30));
+
+                if (stopResponse?.Success != true)
+                {
+                    return StatusCode(500, new { error = stopResponse?.ErrorMessage ?? "Failed to stop instance" });
+                }
+
+                // Small delay for clean shutdown
+                await Task.Delay(TimeSpan.FromSeconds(2));
+
+                // Start the instance
+                var startCommand = new StartInstanceCommand
+                {
+                    InstanceId = instanceId,
+                    Configuration = config
+                };
+
+                var startResponse = await _messageBus.RequestAsync<StartInstanceCommand, StartInstanceResponse>(
+                    channel,
+                    startCommand,
+                    timeout: TimeSpan.FromSeconds(30));
+
+                if (startResponse?.Success == true)
+                {
+                    await _instanceService.UpdateInstanceStatusAsync(instanceId, InstanceStatus.Running);
+                    return Ok(new { message = $"Instance '{instanceId}' restarted successfully", runtimeInfo = startResponse.RuntimeInfo });
+                }
+                else
+                {
+                    return StatusCode(500, new { error = startResponse?.ErrorMessage ?? "Failed to start instance" });
+                }
             }
-
-            // Stop the instance
-            await manager.StopInstanceAsync(instanceId);
-
-            // Small delay for clean shutdown
-            await Task.Delay(TimeSpan.FromSeconds(2));
-
-            // Start the instance
-            await manager.StartInstanceAsync(instanceId, config);
-
-            // Update status
-            await _instanceService.UpdateInstanceStatusAsync(instanceId, InstanceStatus.Running);
-
-            return Ok($"Instance '{instanceId}' restarted successfully");
+            else
+            {
+                return BadRequest($"Unsupported platform type '{instance.PlatformType}'");
+            }
         }
         catch (Exception ex)
         {
