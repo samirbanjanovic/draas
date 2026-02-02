@@ -1,0 +1,23 @@
+﻿using System;
+using System.Collections.Generic;
+using System.Text;
+
+namespace DRaaS.Core.Models;
+
+
+
+public record DrasiInstance
+{
+    public required string InstanceId { get; init; }
+    public required string Name { get; init; }
+    public required string Description { get; init; }
+    public required string[] Owners { get; init; }
+
+    public required DateTime CreatedAt { get; init; } = DateTime.Now;
+    public required DateTime LastUpdatedAt { get; init; } = DateTime.Now;
+
+    public List<DrasiInstanceState> StateMemento { get; init; } = [];
+    public RuntimeInfo[]? RuntimeInfo { get; init; }
+    public Configuration? Configuration { get; init; }
+    public Dictionary<string, string> MetaData { get; init; } = [];
+}
