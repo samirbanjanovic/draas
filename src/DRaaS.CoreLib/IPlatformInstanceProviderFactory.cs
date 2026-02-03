@@ -2,6 +2,6 @@
 
 internal interface IPlatformInstanceProviderFactory
 {
-    IPlatformInstanceProvider GetPlatformInstanceManager(string platformType);
-    IEnumerable<IPlatformInstanceProvider> GetAllPlatformInstanceManagers();
+    Task<IPlatformInstanceProvider> GetPlatformInstanceManagerAsync(string platformType);
+    Task<IEnumerable<IPlatformInstanceProvider>> GetAllPlatformInstanceManagersAsync();
 }

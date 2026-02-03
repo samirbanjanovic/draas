@@ -2,19 +2,12 @@
 
 namespace DRaaS.Core;
 
-public record InstanceRuntimeInfo();
-
 public interface IPlatformInstanceProvider
 {
     PlatformInstanceManagerConfig Config { get; set; }
-
     PlatformInstanceManagerInfo Status { get; }
-
-    DrasiInstance DeployInstanceAsync(DrasiInstance instance);
-
-    DrasiInstance StartInstanceAsync(string instanceId);
-
-    DrasiInstance StopInstanceAsync(string instanceId);
-
-    DrasiInstance GetInstanceRuntimeInfoAsync(string instanceId);
+    Task<DrasiInstance> DeployInstanceAsync(DrasiInstance instance);
+    Task<DrasiInstance> StartInstanceAsync(string instanceId);
+    Task<DrasiInstance> StopInstanceAsync(string instanceId);
+    Task<DrasiInstance> GetInstanceRuntimeInfoAsync(string instanceId);
 }

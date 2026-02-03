@@ -4,11 +4,11 @@ namespace DRaaS.Core;
 
 public interface IDrasiInstanceStorageService
 {
-    DrasiInstance SaveInstanceAsync(DrasiInstance instance);
-    DrasiInstance UpdateInstanceAsync(DrasiInstance instance);
-    DrasiInstance GetInstanceAsync(string instanceId);
-    IEnumerable<DrasiInstance> GetInstancesByOwnerAsync(string ownerPrincipal);
-    IEnumerable<DrasiInstance> GetInstancesByNameAsync(string instanceName);
-    IEnumerable<DrasiInstance> GetInstanceNamesByOwnerAsync(string ownerPrincipal);
-    IEnumerable<DrasiInstance> GetAllInstancesAsync();
+    Task<DrasiInstance> SaveInstanceAsync(DrasiInstance instance);
+    Task<DrasiInstance> UpdateInstanceAsync(DrasiInstance instance);
+    Task<DrasiInstance> GetInstanceAsync(string instanceId);
+    Task<IEnumerable<DrasiInstance>> GetInstancesByOwnerAsync(string ownerPrincipal);
+    Task<IEnumerable<DrasiInstance>> GetInstancesByNameAsync(string instanceName);
+    Task<IEnumerable<DrasiInstance>> GetInstanceNamesByOwnerAsync(string ownerPrincipal);
+    Task<IEnumerable<DrasiInstance>> GetAllInstancesAsync();
 }
