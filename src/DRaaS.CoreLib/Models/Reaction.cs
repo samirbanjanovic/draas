@@ -1,8 +1,4 @@
-﻿using System;
-using System.Collections.Generic;
-using System.Text;
-
-namespace DRaaS.Core.Models;
+﻿namespace DRaaS.Core.Models;
 
 public record Reaction
 {

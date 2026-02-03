@@ -1,6 +1,6 @@
 ﻿namespace DRaaS.Core.Models;
 
-public record Configuration
+public record DrasiConfiguration
 {
     public string? Host { get; init; }
     public int? Port { get; init; }
