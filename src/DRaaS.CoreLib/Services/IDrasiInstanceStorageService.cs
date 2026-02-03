@@ -1,6 +1,6 @@
 ﻿using DRaaS.Core.Models;
 
-namespace DRaaS.Core;
+namespace DRaaS.CoreLib.Services;
 
 public interface IDrasiInstanceStorageService
 {

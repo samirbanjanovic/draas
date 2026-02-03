@@ -1,6 +1,7 @@
 ﻿using DRaaS.Core.Models;
+using DRaaS.CoreLib.Providers;
 
-namespace DRaaS.Core;
+namespace DRaaS.CoreLib.Services;
 
 public interface IPlatformOrchestrationService
 {

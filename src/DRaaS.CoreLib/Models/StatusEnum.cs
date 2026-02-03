@@ -2,7 +2,8 @@
 
 public enum Status
 {
-    Registered = 0,
+    Unknown = 0,
+    Registered,
     Deregistered,
     Creating,
     Created,
@@ -12,6 +13,5 @@ public enum Status
     Stopped,
     Deleting,
     Deleted,
-    Error,
-    Unknown = 999
+    Error,    
 }

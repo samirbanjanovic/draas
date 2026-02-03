@@ -15,5 +15,5 @@ public record DrasiInstance
     public List<DrasiInstanceState> StateHistory { get; init; } = [];
     public RuntimeInfo[]? RuntimeInfo { get; init; }
     public DrasiConfiguration? Configuration { get; init; }
-    public Dictionary<string, string> MetaData { get; init; } = [];
+    public Dictionary<string, object?> MetaData { get; init; } = [];
 }
