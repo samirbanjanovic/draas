@@ -4,10 +4,10 @@ namespace DRaaS.Core;
 
 public interface IPlatformInstanceProvider
 {
-    PlatformInstanceManagerConfig Config { get; set; }
-    PlatformInstanceManagerInfo Status { get; }
-    Task<DrasiInstance> DeployInstanceAsync(DrasiInstance instance);
-    Task<DrasiInstance> StartInstanceAsync(string instanceId);
-    Task<DrasiInstance> StopInstanceAsync(string instanceId);
-    Task<DrasiInstance> GetInstanceRuntimeInfoAsync(string instanceId);
+    PlatformInstanceProviderConfig Config { get; set; }
+    PlatformInstanceProviderInfo Status { get; }
+    Task<DrasiInstance> DeployInstanceAsync(DrasiInstance instance, CancellationToken cancellationToken);
+    Task<DrasiInstance> StartInstanceAsync(string instanceId, CancellationToken cancellationToken);
+    Task<DrasiInstance> StopInstanceAsync(string instanceId, CancellationToken cancellationToken);
+    Task<DrasiInstance> GetInstanceRuntimeInfoAsync(string instanceId, CancellationToken cancellationToken);
 }

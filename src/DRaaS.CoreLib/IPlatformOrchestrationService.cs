@@ -4,8 +4,8 @@ namespace DRaaS.Core;
 
 public interface IPlatformOrchestrationService
 {
-    IPlatformInstanceProvider GetDefaultPlatformInstanceManager();
-    Task<PlatformPlacement> PlaceInstanceAsync(DrasiInstance instance);
-    Task<PlatformPlacement> GetInstancePlacementAsync(string instanceId);
+    IPlatformInstanceProvider GetDefaultPlatformInstanceProvider();
+    Task<PlatformPlacement> PlaceInstanceAsync(DrasiInstance instance, CancellationToken cancellationToken);
+    Task<PlatformPlacement> GetInstancePlacementAsync(string instanceId, CancellationToken cancellationToken);
 }
 

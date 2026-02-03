@@ -1,7 +1,7 @@
 ﻿namespace DRaaS.Core;
 
-internal interface IPlatformInstanceProviderFactory
+public interface IPlatformInstanceProviderFactory
 {
-    Task<IPlatformInstanceProvider> GetPlatformInstanceManagerAsync(string platformType);
-    Task<IEnumerable<IPlatformInstanceProvider>> GetAllPlatformInstanceManagersAsync();
+    Task<IPlatformInstanceProvider> GetPlatformInstanceProviderAsync(string platformType, CancellationToken cancellationToken);
+    Task<IEnumerable<IPlatformInstanceProvider>> GetAllPlatformInstanceProvidersAsync(CancellationToken cancellationToken);
 }

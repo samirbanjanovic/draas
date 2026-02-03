@@ -9,17 +9,19 @@ public interface IDrasiInstanceService
                                         string description,
                                         string platform,
                                         DrasiConfiguration config,
-                                        Dictionary<string, string> metaData);
+                                        Dictionary<string, string> metaData,
+                                        CancellationToken cancellationToken);
 
     Task<DrasiInstance> UpdateInstanceAsync(string instanceId,
                                       DrasiConfiguration config,
-                                      Dictionary<string, string> metaData);
+                                      Dictionary<string, string> metaData,
+                                      CancellationToken cancellationToken);
 
-    Task<DrasiInstance> DeregisterInstanceAsync(string instanceId);
+    Task<DrasiInstance> DeregisterInstanceAsync(string instanceId, CancellationToken cancellationToken);
 
-    Task<DrasiInstance> DeleteInstanceAsync(string instanceId);
-    Task<DrasiInstance> GetInstanceByIdAsync(string instanceId);
-    Task<IEnumerable<DrasiInstance>> GetInstancesByNameAsync(string instanceName);
-    Task<IEnumerable<DrasiInstance>> GetInstancesByOwnerAsync(string ownerPrincipal);
+    Task<DrasiInstance> DeleteInstanceAsync(string instanceId, CancellationToken cancellationToken);
+    Task<DrasiInstance> GetInstanceByIdAsync(string instanceId, CancellationToken cancellationToken);
+    Task<IEnumerable<DrasiInstance>> GetInstancesByNameAsync(string instanceName, CancellationToken cancellationToken);
+    Task<IEnumerable<DrasiInstance>> GetInstancesByOwnerAsync(string ownerPrincipal, CancellationToken cancellationToken);
 
 }

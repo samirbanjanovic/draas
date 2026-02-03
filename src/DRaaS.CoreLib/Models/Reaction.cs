@@ -2,7 +2,7 @@
 
 public record Reaction
 {
-    public string? Kind { get; init; }
-    public string? Id { get; init; }
+    public required string Kind { get; init; }
+    public required string Id { get; init; }
     public List<string>? Queries { get; init; }
 }

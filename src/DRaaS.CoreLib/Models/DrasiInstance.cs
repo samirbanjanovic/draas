@@ -9,8 +9,8 @@ public record DrasiInstance
     public required string Description { get; init; }
     public required string[] Owners { get; init; }
 
-    public required DateTime CreatedAt { get; init; } = DateTime.Now;
-    public required DateTime LastUpdatedAt { get; init; } = DateTime.Now;
+    public required DateTime CreatedAt { get; init; }
+    public required DateTime LastUpdatedAt { get; init; }
 
     public List<DrasiInstanceState> StateHistory { get; init; } = [];
     public RuntimeInfo[]? RuntimeInfo { get; init; }

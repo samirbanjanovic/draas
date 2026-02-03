@@ -2,14 +2,14 @@
 
 public record QuerySource
 {
-    public string? SourceId { get; init; }
+    public required string SourceId { get; init; }
 }
 
 
 public record Query
 {
-    public string? Id { get; init; }
-    public string? QueryText { get; init; }
+    public required string Id { get; init; }
+    public required string QueryText { get; init; }
     public List<QuerySource>? Sources { get; init; }
 }
 
