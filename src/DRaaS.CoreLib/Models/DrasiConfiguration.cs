@@ -1,4 +1,4 @@
-﻿namespace DRaaS.Core.Models;
+﻿namespace DRaaS.CoreLib.Models;
 
 public record DrasiConfiguration
 {

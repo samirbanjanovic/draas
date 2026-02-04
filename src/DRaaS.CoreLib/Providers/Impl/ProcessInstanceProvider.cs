@@ -1,30 +1,56 @@
-﻿using DRaaS.Core.Models;
-using DRaaS.CoreLib.Models;
+﻿using DRaaS.CoreLib.Models;
 using DRaaS.CoreLib.StateMachines;
 using Microsoft.Extensions.Options;
 using System.Collections.Concurrent;
 using System.Diagnostics;
-using System.Text;
 
 namespace DRaaS.CoreLib.Providers.Impl;
 
+/// <summary>
+/// Configuration options for the process-based instance provider.
+/// </summary>
 public record ProcessInstanceProviderOptions
 {
+    /// <summary>
+    /// Path to the executable to run for each instance.
+    /// Can be absolute or relative (assumes PATH).
+    /// </summary>
     public required string ExecutablePath { get; init; }
+
+    /// <summary>
+    /// Root directory where instance-specific subdirectories are created.
+    /// Each instance gets its own subdirectory: {InstanceConfigDirectory}/{instanceId}/
+    /// </summary>
     public required string InstanceConfigDirectory { get; init; }
+
+    /// <summary>
+    /// Working directory for the process execution.
+    /// </summary>
     public required string WorkingDirectory { get; init; }
+
+    /// <summary>
+    /// Default log level if not specified in configuration.
+    /// </summary>
     public string DefaultLogLevel { get; init; } = "Info";
+
+    /// <summary>
+    /// Timeout in seconds to wait for graceful shutdown before force-killing the process.
+    /// </summary>
     public int GracefulShutdownTimeoutInSeconds { get; init; } = 30;
 }
 
 public class ProcessInstanceProvider : IPlatformInstanceProvider
 {
     private readonly ProcessInstanceProviderOptions _options;
+    private readonly IDrasiConfigurationProvider _configurationProvider;
     private readonly ConcurrentDictionary<string, ProcessRuntimeState> _instances = new();
 
-    public ProcessInstanceProvider(IOptions<ProcessInstanceProviderOptions> options)
+    public ProcessInstanceProvider(
+        IOptions<ProcessInstanceProviderOptions> options,
+        IDrasiConfigurationProvider configurationProvider)
     {
         _options = options.Value;
+        _configurationProvider = configurationProvider;
         EnsureDirectoriesExist();
     }
 
@@ -63,7 +89,7 @@ public class ProcessInstanceProvider : IPlatformInstanceProvider
             if (existingState.Process != null && !existingState.Process.HasExited)
             {
                 throw new InvalidOperationException(
-                    $"Instance '{deploymentInfo.InstanceId}' is already deployed and running. " +
+                    $"Instance '{deploymentInfo.InstanceId}' is already deployed and active. " +
                     $"Stop or delete the instance before redeploying."
                 );
             }
@@ -75,11 +101,15 @@ public class ProcessInstanceProvider : IPlatformInstanceProvider
             );
         }
 
-        // Create instance-specific configuration file
-        var configFilePath = Path.Combine(
+        // Create instance-specific directory and configuration file
+        var instanceDirectory = Path.Combine(
             _options.InstanceConfigDirectory, 
-            $"{deploymentInfo.InstanceId}-config.yaml"
+            deploymentInfo.InstanceId
         );
+
+        Directory.CreateDirectory(instanceDirectory);
+
+        var configFilePath = Path.Combine(instanceDirectory, "instance-config.yaml");
 
         await CreateConfigurationFileAsync(
             deploymentInfo.InstanceId,
@@ -382,17 +412,18 @@ public class ProcessInstanceProvider : IPlatformInstanceProvider
 
         state.Process?.Dispose();
 
-        // Clean up configuration file
+        // Clean up instance directory (includes config and any other instance files)
         try
         {
-            if (File.Exists(state.ConfigFilePath))
+            var instanceDirectory = Path.GetDirectoryName(state.ConfigFilePath);
+            if (!string.IsNullOrEmpty(instanceDirectory) && Directory.Exists(instanceDirectory))
             {
-                File.Delete(state.ConfigFilePath);
+                Directory.Delete(instanceDirectory, recursive: true);
             }
         }
         catch
         {
-            // Ignore cleanup errors
+            // Ignore cleanup errors - directory might be in use or already deleted
         }
 
         return Task.CompletedTask;
@@ -504,94 +535,18 @@ public class ProcessInstanceProvider : IPlatformInstanceProvider
         string configFilePath, 
         CancellationToken cancellationToken)
     {
-        var yamlConfig = new StringBuilder();
-        yamlConfig.AppendLine($"id: {instanceId}");
-        yamlConfig.AppendLine($"host: {configuration.Host}");
-        yamlConfig.AppendLine($"port: {configuration.Port}");
-        yamlConfig.AppendLine($"logLevel: {configuration.LogLevel ?? _options.DefaultLogLevel}");
-        yamlConfig.AppendLine("persistConfig: true");
-        yamlConfig.AppendLine("persistIndex: false");
-        yamlConfig.AppendLine();
+        var additionalSettings = new Dictionary<string, object?>
+        {
+            ["DefaultLogLevel"] = _options.DefaultLogLevel
+        };
 
-        // Add sources if configured
-        if (configuration.Sources?.Count > 0)
-        {
-            yamlConfig.AppendLine("sources:");
-            foreach (var source in configuration.Sources)
-            {
-                yamlConfig.AppendLine($"  - kind: {source.Kind}");
-                yamlConfig.AppendLine($"    id: {source.Id}");
-                yamlConfig.AppendLine($"    autoStart: {source.AutoStart.ToString().ToLowerInvariant()}");
-            }
-            yamlConfig.AppendLine();
-        }
-        else
-        {
-            yamlConfig.AppendLine("sources: []");
-            yamlConfig.AppendLine();
-        }
+        var yamlContent = _configurationProvider.GenerateConfiguration(
+            instanceId, 
+            configuration,
+            additionalSettings
+        );
 
-        // Add queries if configured
-        if (configuration.Queries?.Count > 0)
-        {
-            yamlConfig.AppendLine("queries:");
-            foreach (var query in configuration.Queries)
-            {
-                yamlConfig.AppendLine($"  - id: {query.Id}");
-                if (!string.IsNullOrWhiteSpace(query.QueryText))
-                {
-                    yamlConfig.AppendLine($"    query: |");
-                    var queryLines = query.QueryText.Split('\n');
-                    foreach (var line in queryLines)
-                    {
-                        yamlConfig.AppendLine($"      {line}");
-                    }
-                }
-                yamlConfig.AppendLine("    sources:");
-                if (query.Sources?.Count > 0)
-                {
-                    foreach (var source in query.Sources)
-                    {
-                        yamlConfig.AppendLine($"      - sourceId: {source.SourceId}");
-                    }
-                }
-            }
-            yamlConfig.AppendLine();
-        }
-        else
-        {
-            yamlConfig.AppendLine("queries: []");
-            yamlConfig.AppendLine();
-        }
-
-        // Add reactions if configured
-        if (configuration.Reactions?.Count > 0)
-        {
-            yamlConfig.AppendLine("reactions:");
-            foreach (var reaction in configuration.Reactions)
-            {
-                yamlConfig.AppendLine($"  - kind: {reaction.Kind}");
-                yamlConfig.AppendLine($"    id: {reaction.Id}");
-                if (reaction.Queries?.Count > 0)
-                {
-                    yamlConfig.Append("    queries: [");
-                    yamlConfig.Append(string.Join(", ", reaction.Queries));
-                    yamlConfig.AppendLine("]");
-                }
-                else
-                {
-                    yamlConfig.AppendLine("    queries: []");
-                }
-            }
-            yamlConfig.AppendLine();
-        }
-        else
-        {
-            yamlConfig.AppendLine("reactions: []");
-            yamlConfig.AppendLine();
-        }
-
-        await File.WriteAllTextAsync(configFilePath, yamlConfig.ToString(), cancellationToken);
+        await File.WriteAllTextAsync(configFilePath, yamlContent, cancellationToken);
     }
 
     private void EnsureDirectoriesExist()

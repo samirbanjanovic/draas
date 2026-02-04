@@ -1,4 +1,4 @@
-﻿using DRaaS.Core.Models;
+﻿using DRaaS.CoreLib.Models;
 using DRaaS.CoreLib.Providers;
 
 namespace DRaaS.CoreLib.Services;
