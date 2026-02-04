@@ -1,5 +1,6 @@
 ﻿using DRaaS.Core.Models;
 using DRaaS.CoreLib.Models;
+using DRaaS.CoreLib.StateMachines;
 using Microsoft.Extensions.Options;
 using System.Collections.Concurrent;
 using System.Diagnostics;

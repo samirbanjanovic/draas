@@ -1,6 +1,7 @@
 using System.Collections.Frozen;
+using DRaaS.CoreLib.Models;
 
-namespace DRaaS.CoreLib.Models;
+namespace DRaaS.CoreLib.StateMachines;
 
 /// <summary>
 /// Exception thrown when an invalid state transition is attempted.
