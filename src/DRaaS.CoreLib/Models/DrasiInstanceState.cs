@@ -1,79 +1,31 @@
 ﻿namespace DRaaS.CoreLib.Models;
 
-public record DrasiInstanceState
+public record DrasiInstanceStateTransition
 {
-    public required Status Status { get; init; } = Status.Unknown;
-    public required DateTime TimeStamp { get; init; } = DateTime.Now;
+    public required DomainStatus Status { get; init; }
+    public required DateTime TimeStamp { get; init; }
     public required Dictionary<string, string> StateMetadata { get; init; } = [];
 }
 
-public enum Status
+public enum DomainStatus
 {
-    /// <summary>
-    /// Status unknown or not set.
-    /// </summary>
-    Unknown = 0,
-
-    /// <summary>
-    /// Instance registered in domain, no infrastructure deployment.
-    /// </summary>
-    Registered,
-
-    /// <summary>
-    /// Instance deregistered (soft delete / inactive).
-    /// </summary>
+    Registered = 0,
+    Configured,
+    ConfigurationError,
     Deregistered,
+}
 
-    /// <summary>
-    /// Infrastructure is being created (deployment in progress).
-    /// Maps to PlacementProviderRuntimeStatus.Deploying.
-    /// </summary>
-    Creating,
+public static class DomainStatusExtensions
+{
+    public static bool IsActive(this DomainStatus status)
+        => status != DomainStatus.Deregistered;
 
-    /// <summary>
-    /// Infrastructure created and ready to start.
-    /// Maps to PlacementProviderRuntimeStatus.Deployed.
-    /// </summary>
-    Created,
+    public static bool HasValidConfiguration(this DomainStatus status)
+        => status == DomainStatus.Configured;
 
-    /// <summary>
-    /// Infrastructure starting up.
-    /// Maps to PlacementProviderRuntimeStatus.Starting.
-    /// </summary>
-    Starting,
+    public static bool CanDeploy(this DomainStatus status)
+        => status == DomainStatus.Configured;
 
-    /// <summary>
-    /// Infrastructure running and operational.
-    /// Maps to PlacementProviderRuntimeStatus.Running.
-    /// </summary>
-    Running,
-
-    /// <summary>
-    /// Infrastructure stopping.
-    /// Maps to PlacementProviderRuntimeStatus.Stopping.
-    /// </summary>
-    Stopping,
-
-    /// <summary>
-    /// Infrastructure stopped but still deployed.
-    /// Maps to PlacementProviderRuntimeStatus.Stopped.
-    /// </summary>
-    Stopped,
-
-    /// <summary>
-    /// Instance being deleted.
-    /// </summary>
-    Deleting,
-
-    /// <summary>
-    /// Instance deleted.
-    /// Maps to PlacementProviderRuntimeStatus.Deleted.
-    /// </summary>
-    Deleted,
-
-    /// <summary>
-    /// Error or failure occurred.
-    /// Maps to PlacementProviderRuntimeStatus.Failed.
-    /// </summary>
-    Error,
+    public static bool CanModifyConfiguration(this DomainStatus status)
+        => status != DomainStatus.Deregistered;
 }

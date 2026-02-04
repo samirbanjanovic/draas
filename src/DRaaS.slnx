@@ -10,6 +10,9 @@
     <File Path="../docs/ProviderStateMachine.md" />
     <File Path="../docs/RESTORATION-SUMMARY.md" />
     <File Path="../docs/StateHistory-Stack-Optimization.md" />
+    <File Path="DRaaS.CoreLib/Providers/AVAILABLE_PLATFORMS_API.md" />
+    <File Path="DRaaS.CoreLib/Providers/PLATFORM_PROPERTIES.md" />
   </Folder>
   <Project Path="DRaaS.CoreLib/DRaaS.CoreLib.csproj" />
+  <Project Path="DRaaS.WebApi/DRaaS.WebApi.csproj" Id="f590ee3e-56e3-4242-ba7c-7497719f4eba" />
 </Solution>

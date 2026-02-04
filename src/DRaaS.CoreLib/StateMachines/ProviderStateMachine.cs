@@ -3,9 +3,6 @@ using DRaaS.CoreLib.Models;
 
 namespace DRaaS.CoreLib.StateMachines;
 
-/// <summary>
-/// Exception thrown when an invalid state transition is attempted.
-/// </summary>
 public class InvalidStateTransitionException : InvalidOperationException
 {
     public PlacementProviderRuntimeStatus FromState { get; }
@@ -37,16 +34,9 @@ public class InvalidStateTransitionException : InvalidOperationException
     }
 }
 
-/// <summary>
-/// Manages state transitions for platform instance providers.
-/// Defines valid state transitions and enforces them consistently across all providers.
-/// </summary>
 public static class ProviderStateMachine
 {
-    /// <summary>
-    /// Defines valid state transitions. Key = current state, Value = allowed next states.
-    /// </summary>
-    private static readonly FrozenDictionary<PlacementProviderRuntimeStatus, FrozenSet<PlacementProviderRuntimeStatus>> ValidTransitions = 
+    private static readonly FrozenDictionary<PlacementProviderRuntimeStatus, FrozenSet<PlacementProviderRuntimeStatus>> ValidTransitions =
         new Dictionary<PlacementProviderRuntimeStatus, FrozenSet<PlacementProviderRuntimeStatus>>
         {
             // Unknown: Can transition to any state (recovery/initialization)
@@ -127,14 +117,6 @@ public static class ProviderStateMachine
         }
         .ToFrozenDictionary();
 
-    /// <summary>
-    /// Checks if a target state is reachable from the current state through any valid path.
-    /// Uses breadth-first search to find if there's a valid sequence of transitions.
-    /// This is the primary method for checking state reachability.
-    /// </summary>
-    /// <param name="from">Current state</param>
-    /// <param name="to">Target state</param>
-    /// <returns>True if target state is reachable, false otherwise</returns>
     public static bool CanReach(
         PlacementProviderRuntimeStatus from, 
         PlacementProviderRuntimeStatus to)
@@ -166,14 +148,6 @@ public static class ProviderStateMachine
         return false;
     }
 
-    /// <summary>
-    /// Validates that a target state is reachable and throws an exception if not.
-    /// Uses CanReach() to check for any valid path (direct or multi-hop).
-    /// Pure state validation - no application context.
-    /// </summary>
-    /// <param name="from">Current state</param>
-    /// <param name="to">Target state</param>
-    /// <exception cref="InvalidStateTransitionException">Thrown when target state is not reachable</exception>
     public static void ValidateTransition(
         PlacementProviderRuntimeStatus from,
         PlacementProviderRuntimeStatus to)
@@ -185,11 +159,6 @@ public static class ProviderStateMachine
         throw new InvalidStateTransitionException(from, to, directTransitions);
     }
 
-    /// <summary>
-    /// Gets all valid target states from a given state.
-    /// </summary>
-    /// <param name="from">Current state</param>
-    /// <returns>Collection of valid target states</returns>
     public static IReadOnlySet<PlacementProviderRuntimeStatus> GetValidTransitions(
         PlacementProviderRuntimeStatus from)
     {
@@ -199,40 +168,15 @@ public static class ProviderStateMachine
         return FrozenSet<PlacementProviderRuntimeStatus>.Empty;
     }
 
-    /// <summary>
-    /// Determines if a state allows starting an instance.
-    /// Checks if Running state is reachable from current state (handles any path length).
-    /// </summary>
     public static bool CanStart(PlacementProviderRuntimeStatus currentState)
-    {
-        return CanReach(currentState, PlacementProviderRuntimeStatus.Running);
-    }
+        => CanReach(currentState, PlacementProviderRuntimeStatus.Running);
 
-    /// <summary>
-    /// Determines if a state allows stopping an instance.
-    /// Checks if Stopped state is reachable from current state (handles any path length).
-    /// </summary>
     public static bool CanStop(PlacementProviderRuntimeStatus currentState)
-    {
-        return CanReach(currentState, PlacementProviderRuntimeStatus.Stopped);
-    }
+        => CanReach(currentState, PlacementProviderRuntimeStatus.Stopped);
 
-    /// <summary>
-    /// Determines if a state allows deployment.
-    /// Convenience method - deployment is only valid for new instances.
-    /// </summary>
     public static bool CanDeploy(PlacementProviderRuntimeStatus? currentState)
-    {
-        // Can only deploy if instance doesn't exist (null state) or is in Unknown state
-        return currentState is null or PlacementProviderRuntimeStatus.Unknown;
-    }
+        => currentState is null or PlacementProviderRuntimeStatus.Unknown;
 
-    /// <summary>
-    /// Determines if a state allows deletion.
-    /// Convenience method - can delete from any state except Deleted.
-    /// </summary>
     public static bool CanDelete(PlacementProviderRuntimeStatus currentState)
-    {
-        return currentState != PlacementProviderRuntimeStatus.Deleted;
-    }
+        => currentState != PlacementProviderRuntimeStatus.Deleted;
 }

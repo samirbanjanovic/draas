@@ -1,9 +1,7 @@
-﻿namespace DRaaS.CoreLib.Models;
+﻿using System.Diagnostics.CodeAnalysis;
 
-/// <summary>
-/// Domain aggregate root representing a Drasi instance.
-/// Includes both domain properties and infrastructure placement information.
-/// </summary>
+namespace DRaaS.CoreLib.Models;
+
 public class DrasiInstance
 {
     public required string InstanceId { get; set; }
@@ -11,14 +9,29 @@ public class DrasiInstance
     public required string Description { get; set; }
     public required string[] Owners { get; set; }
     public required DateTime CreatedAt { get; set; }
-    public required DateTime LastUpdatedAt { get; set; }
-    public Stack<DrasiInstanceState> StateHistory { get; set; } = new();
-
-    public DrasiConfiguration? Configuration { get; set; }
+    public required DateTime LastUpdatedAt { get; set; }    
+    public required DrasiConfiguration Configuration { get; set; }
 
     public Dictionary<string, object?> MetaData { get; set; } = [];
-    
-    public PlacementProviderRuntimeInfo? Placement { get; set; }
+    public Stack<DrasiInstanceStateTransition> StateHistory { get; set; } = new();
 
-    public Status CurrentStatus => StateHistory.Count > 0 ? StateHistory.Peek().Status : Status.Unknown;
+    public DomainStatus Status => StateHistory.Count > 0 
+        ? StateHistory.Peek().Status 
+        : DomainStatus.Registered;
+
+    public PlacementProviderRuntimeInfo? Placement { get; set; }
+    public PlacementProviderRuntimeStatus? RuntimeStatus => Placement?.Status;
+
+    public bool IsFullyOperational => 
+        Status == DomainStatus.Configured && 
+        RuntimeStatus == PlacementProviderRuntimeStatus.Running;
+
+    public bool IsReadyForDeployment => 
+        Status == DomainStatus.Configured && 
+        Placement == null;
+
+    public bool NeedsCleanup => 
+        Status == DomainStatus.Deregistered && 
+        Placement != null && 
+        RuntimeStatus != PlacementProviderRuntimeStatus.Deleted;
 }

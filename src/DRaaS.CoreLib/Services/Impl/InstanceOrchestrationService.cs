@@ -1,24 +1,20 @@
 using DRaaS.CoreLib.Models;
 using DRaaS.CoreLib.Providers;
+using DRaaS.CoreLib.StateMachines;
 
 namespace DRaaS.CoreLib.Services.Impl;
 
-/// <summary>
-/// Unified orchestration service that manages complete instance lifecycle.
-/// Coordinates domain persistence (IDrasiInstanceStorageService) and infrastructure placement (IPlatformInstanceProviderFactory).
-/// Maintains DrasiInstance as single source of truth with embedded placement.
-/// </summary>
 public class InstanceOrchestrationService : IInstanceOrchestrationService
 {
     private readonly IDrasiInstanceStorageService _storageService;
-    private readonly IPlatformInstanceProviderFactory _providerFactory;
+    private readonly IPlatformProviderRegistry _providerRegistry;
 
     public InstanceOrchestrationService(
         IDrasiInstanceStorageService storageService,
-        IPlatformInstanceProviderFactory providerFactory)
+        IPlatformProviderRegistry providerRegistry)
     {
         _storageService = storageService ?? throw new ArgumentNullException(nameof(storageService));
-        _providerFactory = providerFactory ?? throw new ArgumentNullException(nameof(providerFactory));
+        _providerRegistry = providerRegistry ?? throw new ArgumentNullException(nameof(providerRegistry));
     }
 
     public async Task<DrasiInstance> RegisterInstanceAsync(
@@ -34,10 +30,10 @@ public class InstanceOrchestrationService : IInstanceOrchestrationService
         ArgumentNullException.ThrowIfNull(owners);
         ArgumentNullException.ThrowIfNull(configuration);
 
-        var stateHistory = new Stack<DrasiInstanceState>();
-        stateHistory.Push(new DrasiInstanceState
+        var stateHistory = new Stack<DrasiInstanceStateTransition>();
+        stateHistory.Push(new DrasiInstanceStateTransition
         {
-            Status = Status.Registered,
+            Status = DomainStatus.Registered,
             TimeStamp = DateTime.UtcNow,
             StateMetadata = new Dictionary<string, string> { ["Reason"] = "Initial registration" }
         });
@@ -56,7 +52,31 @@ public class InstanceOrchestrationService : IInstanceOrchestrationService
             Placement = null
         };
 
+        instance = await AddDomainStateTransitionAsync(instance, DomainStatus.Configured,
+            new Dictionary<string, string> { ["Reason"] = "Configuration provided" },
+            cancellationToken);
+
         return await _storageService.SaveInstanceAsync(instance, cancellationToken);
+    }
+
+    public async Task<DrasiInstance> DeployInstanceAsync(
+        string name,
+        string description,
+        string[] owners,
+        DrasiConfiguration configuration,
+        string? platformType = null,
+        Dictionary<string, object?>? metadata = null,
+        CancellationToken cancellationToken = default)
+    {
+        var instance = await RegisterInstanceAsync(
+            name,
+            description,
+            owners,
+            configuration,
+            metadata,
+            cancellationToken);
+
+        return await DeployInstanceAsync(instance.InstanceId, platformType, cancellationToken);
     }
 
     public async Task<DrasiInstance> DeployInstanceAsync(
@@ -68,24 +88,26 @@ public class InstanceOrchestrationService : IInstanceOrchestrationService
 
         var instance = await _storageService.GetInstanceAsync(instanceId, cancellationToken);
 
-        if (instance.CurrentStatus != Status.Registered && instance.CurrentStatus != Status.Created)
+        if (!instance.Status.HasValidConfiguration())
         {
             throw new InvalidOperationException(
-                $"Instance {instanceId} cannot be deployed from state {instance.CurrentStatus}. Expected Registered.");
+                $"Instance {instanceId} cannot be deployed - configuration is not valid. Current status: {instance.Status}");
+        }
+
+        if (instance.Placement != null)
+        {
+            throw new InvalidOperationException(
+                $"Instance {instanceId} is already deployed to {instance.Placement.PlatformType}. Current runtime status: {instance.RuntimeStatus}");
         }
 
         var provider = platformType != null
-            ? await _providerFactory.GetPlatformInstanceProviderAsync(platformType, cancellationToken)
-            : _providerFactory.DefaultProvider;
+            ? await _providerRegistry.GetProviderAsync(platformType, cancellationToken)
+            : _providerRegistry.DefaultProvider;
 
         if (!provider.IsAvailable)
         {
             throw new InvalidOperationException($"Platform provider '{provider.PlatformType}' is not available.");
         }
-
-        instance = await AddStateTransitionAsync(instance, Status.Creating,
-            new Dictionary<string, string> { ["PlatformType"] = provider.PlatformType },
-            cancellationToken);
 
         PlacementProviderRuntimeInfo runtimeInfo;
         try
@@ -93,19 +115,13 @@ public class InstanceOrchestrationService : IInstanceOrchestrationService
             runtimeInfo = await provider.DeployInstanceAsync(
                 instance.InstanceId,
                 instance.Name,
-                instance.Configuration!,
+                instance.Configuration,
                 cancellationToken);
         }
         catch (Exception ex)
         {
-            await AddStateTransitionAsync(instance, Status.Error,
-                new Dictionary<string, string>
-                {
-                    ["Reason"] = "Deployment failed",
-                    ["Error"] = ex.Message
-                },
-                cancellationToken);
-            throw;
+            throw new InvalidOperationException(
+                $"Failed to deploy instance {instanceId} to {provider.PlatformType}: {ex.Message}", ex);
         }
 
         runtimeInfo = runtimeInfo with { LastSyncedAt = DateTime.UtcNow };
@@ -113,11 +129,7 @@ public class InstanceOrchestrationService : IInstanceOrchestrationService
         instance.Placement = runtimeInfo;
         instance.LastUpdatedAt = DateTime.UtcNow;
 
-        instance = await AddStateTransitionAsync(instance, Status.Created,
-            new Dictionary<string, string> { ["PlatformType"] = provider.PlatformType },
-            cancellationToken);
-
-        return instance;
+        return await _storageService.SaveInstanceAsync(instance, cancellationToken);
     }
 
     public async Task<DrasiInstance> StartInstanceAsync(
@@ -128,23 +140,13 @@ public class InstanceOrchestrationService : IInstanceOrchestrationService
 
         var instance = await _storageService.GetInstanceAsync(instanceId, cancellationToken);
 
-        if (instance.CurrentStatus != Status.Created && instance.CurrentStatus != Status.Stopped)
-        {
-            throw new InvalidOperationException(
-                $"Instance {instanceId} cannot be started from state {instance.CurrentStatus}. Expected Created or Stopped.");
-        }
-
         if (instance.Placement == null)
         {
-            throw new InvalidOperationException($"Instance {instanceId} is not deployed.");
+            throw new InvalidOperationException($"Instance {instanceId} is not deployed. Deploy first before starting.");
         }
 
-        var provider = await _providerFactory.GetPlatformInstanceProviderAsync(
+        var provider = await _providerRegistry.GetProviderAsync(
             instance.Placement.PlatformType,
-            cancellationToken);
-
-        instance = await AddStateTransitionAsync(instance, Status.Starting,
-            new Dictionary<string, string>(),
             cancellationToken);
 
         PlacementProviderRuntimeInfo runtimeInfo;
@@ -152,27 +154,21 @@ public class InstanceOrchestrationService : IInstanceOrchestrationService
         {
             runtimeInfo = await provider.StartInstanceAsync(instanceId, cancellationToken);
         }
+        catch (InvalidStateTransitionException ex)
+        {
+            throw new InvalidOperationException(
+                $"Cannot start instance {instanceId}: {ex.Message}", ex);
+        }
         catch (Exception ex)
         {
-            await AddStateTransitionAsync(instance, Status.Error,
-                new Dictionary<string, string>
-                {
-                    ["Reason"] = "Start failed",
-                    ["Error"] = ex.Message
-                },
-                cancellationToken);
-            throw;
+            throw new InvalidOperationException(
+                $"Failed to start instance {instanceId}: {ex.Message}", ex);
         }
 
         instance.Placement = runtimeInfo with { LastSyncedAt = DateTime.UtcNow };
         instance.LastUpdatedAt = DateTime.UtcNow;
 
-        var status = MapProviderStatusToInstanceStatus(runtimeInfo.Status);
-        instance = await AddStateTransitionAsync(instance, status,
-            new Dictionary<string, string>(),
-            cancellationToken);
-
-        return instance;
+        return await _storageService.SaveInstanceAsync(instance, cancellationToken);
     }
 
     public async Task<DrasiInstance> StopInstanceAsync(
@@ -183,23 +179,13 @@ public class InstanceOrchestrationService : IInstanceOrchestrationService
 
         var instance = await _storageService.GetInstanceAsync(instanceId, cancellationToken);
 
-        if (instance.CurrentStatus != Status.Running && instance.CurrentStatus != Status.Starting)
-        {
-            throw new InvalidOperationException(
-                $"Instance {instanceId} cannot be stopped from state {instance.CurrentStatus}. Expected Running or Starting.");
-        }
-
         if (instance.Placement == null)
         {
             throw new InvalidOperationException($"Instance {instanceId} is not deployed.");
         }
 
-        var provider = await _providerFactory.GetPlatformInstanceProviderAsync(
+        var provider = await _providerRegistry.GetProviderAsync(
             instance.Placement.PlatformType,
-            cancellationToken);
-
-        instance = await AddStateTransitionAsync(instance, Status.Stopping,
-            new Dictionary<string, string>(),
             cancellationToken);
 
         PlacementProviderRuntimeInfo runtimeInfo;
@@ -207,27 +193,21 @@ public class InstanceOrchestrationService : IInstanceOrchestrationService
         {
             runtimeInfo = await provider.StopInstanceAsync(instanceId, cancellationToken);
         }
+        catch (InvalidStateTransitionException ex)
+        {
+            throw new InvalidOperationException(
+                $"Cannot stop instance {instanceId}: {ex.Message}", ex);
+        }
         catch (Exception ex)
         {
-            await AddStateTransitionAsync(instance, Status.Error,
-                new Dictionary<string, string>
-                {
-                    ["Reason"] = "Stop failed",
-                    ["Error"] = ex.Message
-                },
-                cancellationToken);
-            throw;
+            throw new InvalidOperationException(
+                $"Failed to stop instance {instanceId}: {ex.Message}", ex);
         }
 
         instance.Placement = runtimeInfo with { LastSyncedAt = DateTime.UtcNow };
         instance.LastUpdatedAt = DateTime.UtcNow;
 
-        var status = MapProviderStatusToInstanceStatus(runtimeInfo.Status);
-        instance = await AddStateTransitionAsync(instance, status,
-            new Dictionary<string, string>(),
-            cancellationToken);
-
-        return instance;
+        return await _storageService.SaveInstanceAsync(instance, cancellationToken);
     }
 
     public async Task<DrasiInstance> RestartInstanceAsync(
@@ -251,23 +231,28 @@ public class InstanceOrchestrationService : IInstanceOrchestrationService
 
         if (instance.Placement != null)
         {
-            if (instance.CurrentStatus == Status.Running || instance.CurrentStatus == Status.Starting)
+            if (instance.RuntimeStatus == PlacementProviderRuntimeStatus.Running ||
+                instance.RuntimeStatus == PlacementProviderRuntimeStatus.Starting)
             {
-                await StopInstanceAsync(instanceId, cancellationToken);
-                instance = await _storageService.GetInstanceAsync(instanceId, cancellationToken);
+                try
+                {
+                    await StopInstanceAsync(instanceId, cancellationToken);
+                    instance = await _storageService.GetInstanceAsync(instanceId, cancellationToken);
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"Warning: Failed to stop instance {instanceId} before deletion: {ex.Message}");
+                }
             }
 
-            var provider = await _providerFactory.GetPlatformInstanceProviderAsync(
+            var provider = await _providerRegistry.GetProviderAsync(
                 instance.Placement!.PlatformType,
-                cancellationToken);
-
-            instance = await AddStateTransitionAsync(instance, Status.Deleting,
-                new Dictionary<string, string>(),
                 cancellationToken);
 
             try
             {
                 await provider.DeleteInstanceAsync(instanceId, cancellationToken);
+                instance.Placement = null;
             }
             catch (Exception ex)
             {
@@ -275,14 +260,14 @@ public class InstanceOrchestrationService : IInstanceOrchestrationService
             }
         }
 
-        instance = await AddStateTransitionAsync(instance, Status.Deleted,
-            new Dictionary<string, string>(),
+        instance = await AddDomainStateTransitionAsync(instance, DomainStatus.Deregistered,
+            new Dictionary<string, string> { ["Reason"] = "Instance deleted" },
             cancellationToken);
+
+        await _storageService.SaveInstanceAsync(instance, cancellationToken);
     }
 
 
-    // a configuration update should trigger a redeploy in the future
-    // for now, we only allow updates when the instance is stopped or created
     public async Task<DrasiInstance> UpdateInstanceConfigurationAsync(
         string instanceId,
         DrasiConfiguration configuration,
@@ -294,19 +279,32 @@ public class InstanceOrchestrationService : IInstanceOrchestrationService
 
         var instance = await _storageService.GetInstanceAsync(instanceId, cancellationToken);
 
-        if (instance.Placement != null &&
-            instance.CurrentStatus != Status.Created &&
-            instance.CurrentStatus != Status.Stopped)
+        if (!instance.Status.CanModifyConfiguration())
         {
             throw new InvalidOperationException(
-                $"Instance {instanceId} must be stopped before updating configuration. Current state: {instance.CurrentStatus}");
+                $"Instance {instanceId} cannot modify configuration while {instance.Status}.");
+        }
+
+        if (instance.Placement != null)
+        {
+            var infraStatus = instance.RuntimeStatus!.Value;
+            if (infraStatus != PlacementProviderRuntimeStatus.Stopped &&
+                infraStatus != PlacementProviderRuntimeStatus.Deployed)
+            {
+                throw new InvalidOperationException(
+                    $"Instance {instanceId} must be stopped before updating configuration. Current infrastructure state: {infraStatus}");
+            }
         }
 
         instance.Configuration = configuration;
         instance.MetaData = metadata ?? instance.MetaData;
         instance.LastUpdatedAt = DateTime.UtcNow;
 
-        return await _storageService.UpdateInstanceAsync(instance, cancellationToken);
+        instance = await AddDomainStateTransitionAsync(instance, DomainStatus.Configured,
+            new Dictionary<string, string> { ["Reason"] = "Configuration updated" },
+            cancellationToken);
+
+        return await _storageService.SaveInstanceAsync(instance, cancellationToken);
     }
 
     public async Task<DrasiInstance> UpdateInstanceMetadataAsync(
@@ -338,7 +336,7 @@ public class InstanceOrchestrationService : IInstanceOrchestrationService
         {
             try
             {
-                var provider = await _providerFactory.GetPlatformInstanceProviderAsync(
+                var provider = await _providerRegistry.GetProviderAsync(
                     instance.Placement.PlatformType,
                     cancellationToken);
 
@@ -347,21 +345,11 @@ public class InstanceOrchestrationService : IInstanceOrchestrationService
                 instance.Placement = runtimeInfo with { LastSyncedAt = DateTime.UtcNow };
                 instance.LastUpdatedAt = DateTime.UtcNow;
 
-                var providerStatus = MapProviderStatusToInstanceStatus(runtimeInfo.Status);
-                if (instance.CurrentStatus != providerStatus)
-                {
-                    instance = await AddStateTransitionAsync(instance, providerStatus,
-                        new Dictionary<string, string> { ["Reason"] = "State synchronized from provider" },
-                        cancellationToken);
-                }
-                else
-                {
-                    instance = await _storageService.UpdateInstanceAsync(instance, cancellationToken);
-                }
+                instance = await _storageService.SaveInstanceAsync(instance, cancellationToken);
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"Warning: Failed to refresh state for {instanceId}: {ex.Message}");
+                Console.WriteLine($"Warning: Failed to refresh infrastructure state for {instanceId}: {ex.Message}");
             }
         }
 
@@ -383,67 +371,54 @@ public class InstanceOrchestrationService : IInstanceOrchestrationService
     }
 
     public async Task<IEnumerable<DrasiInstance>> GetInstancesByStatusAsync(
-        Status status,
+        DomainStatus status,
         CancellationToken cancellationToken = default)
     {
         var allInstances = await _storageService.GetAllInstancesAsync(cancellationToken);
-        return allInstances.Where(i => i.CurrentStatus == status);
+        return allInstances.Where(i => i.Status == status);
     }
 
-    public async Task<IEnumerable<PlatformInfo>> GetAvailablePlatformsAsync(
+    public async Task<IEnumerable<PlatformDetails>> GetAvailablePlatformsAsync(
         CancellationToken cancellationToken = default)
     {
-        var providers = await _providerFactory.GetAllPlatformInstanceProvidersAsync(cancellationToken);
-        var defaultProvider = _providerFactory.DefaultProvider;
+        var registered = await _providerRegistry.GetProvidersAsync(availableOnly: false, cancellationToken);
 
-        return providers.Select(p => new PlatformInfo
+        return registered.Select(r => new PlatformDetails
         {
-            PlatformType = p.PlatformType,
-            IsAvailable = p.IsAvailable,
-            IsDefault = p.PlatformType == defaultProvider.PlatformType,
-            Metadata = new Dictionary<string, object?>()
+            PlatformType = r.Info.PlatformType,
+            IsAvailable = r.Info.IsAvailable,
+            IsDefault = r.IsDefault,
+            InstanceCount = r.Info.InstanceCount,
+            Labels = r.Info.Labels,
+            Metadata = r.Info.Metadata
         });
     }
 
-    public async Task<PlatformInfo> GetDefaultPlatformAsync(
+    public async Task<PlatformDetails> GetDefaultPlatformAsync(
         CancellationToken cancellationToken = default)
     {
         await Task.CompletedTask;
-        var defaultProvider = _providerFactory.DefaultProvider;
+        var defaultProvider = _providerRegistry.DefaultProvider;
+        var info = defaultProvider.GetPlatformInfo();
 
-        return new PlatformInfo
+        return new PlatformDetails
         {
-            PlatformType = defaultProvider.PlatformType,
-            IsAvailable = defaultProvider.IsAvailable,
+            PlatformType = info.PlatformType,
+            IsAvailable = info.IsAvailable,
             IsDefault = true,
-            Metadata = new Dictionary<string, object?>()
-        };
-    }
-    
-    private static Status MapProviderStatusToInstanceStatus(PlacementProviderRuntimeStatus providerStatus)
-    {
-        return providerStatus switch
-        {
-            PlacementProviderRuntimeStatus.Unknown => Status.Unknown,
-            PlacementProviderRuntimeStatus.Deploying => Status.Creating,
-            PlacementProviderRuntimeStatus.Deployed => Status.Created,
-            PlacementProviderRuntimeStatus.Starting => Status.Starting,
-            PlacementProviderRuntimeStatus.Running => Status.Running,
-            PlacementProviderRuntimeStatus.Stopping => Status.Stopping,
-            PlacementProviderRuntimeStatus.Stopped => Status.Stopped,
-            PlacementProviderRuntimeStatus.Failed => Status.Error,
-            PlacementProviderRuntimeStatus.Deleted => Status.Deleted,
-            _ => Status.Unknown
+            InstanceCount = info.InstanceCount,
+            Labels = info.Labels,
+            Metadata = info.Metadata
         };
     }
 
-    private async Task<DrasiInstance> AddStateTransitionAsync(
+    private async Task<DrasiInstance> AddDomainStateTransitionAsync(
         DrasiInstance instance,
-        Status newStatus,
+        DomainStatus newStatus,
         Dictionary<string, string> metadata,
         CancellationToken cancellationToken)
     {
-        var newState = new DrasiInstanceState
+        var newState = new DrasiInstanceStateTransition
         {
             Status = newStatus,
             TimeStamp = DateTime.UtcNow,
@@ -453,6 +428,6 @@ public class InstanceOrchestrationService : IInstanceOrchestrationService
         instance.StateHistory.Push(newState);
         instance.LastUpdatedAt = DateTime.UtcNow;
 
-        return await _storageService.UpdateInstanceAsync(instance, cancellationToken);
+        return await _storageService.SaveInstanceAsync(instance, cancellationToken);
     }
 }

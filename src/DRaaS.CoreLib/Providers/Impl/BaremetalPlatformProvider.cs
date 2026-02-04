@@ -9,7 +9,7 @@ namespace DRaaS.CoreLib.Providers.Impl;
 /// <summary>
 /// Configuration options for the process-based instance provider.
 /// </summary>
-public record ProcessInstanceProviderOptions
+public record BaremetalProviderOptions
 {
     /// <summary>
     /// Path to the executable to run for each instance.
@@ -39,7 +39,7 @@ public record ProcessInstanceProviderOptions
     public int GracefulShutdownTimeoutInSeconds { get; init; } = 30;
 }
 
-public class ProcessInstanceProvider : IPlatformInstanceProvider
+public class BaremetalPlatformProvider : IPlatformProvider
 {
     private record ProcessRuntimeState
     {
@@ -53,12 +53,12 @@ public class ProcessInstanceProvider : IPlatformInstanceProvider
         public PlacementProviderRuntimeStatus Status { get; init; }
     }
 
-    private readonly ProcessInstanceProviderOptions _options;
+    private readonly BaremetalProviderOptions _options;
     private readonly IDrasiConfigurationProvider _configurationProvider;
     private readonly ConcurrentDictionary<string, ProcessRuntimeState> _instances = new();
 
-    public ProcessInstanceProvider(
-        IOptions<ProcessInstanceProviderOptions> options,
+    public BaremetalPlatformProvider(
+        IOptions<BaremetalProviderOptions> options,
         IDrasiConfigurationProvider configurationProvider)
     {
         _options = options.Value;
@@ -88,6 +88,33 @@ public class ProcessInstanceProvider : IPlatformInstanceProvider
                 return false;
             }
         }
+    }
+
+    public PlatformInfo GetPlatformInfo()
+    {
+        var runningCount = _instances.Values.Count(s => 
+            s.Status == PlacementProviderRuntimeStatus.Running && 
+            (s.Process == null || !s.Process.HasExited));
+
+        return new PlatformInfo
+        {
+            PlatformType = PlatformType,
+            IsAvailable = IsAvailable,
+            InstanceCount = runningCount,
+            Labels = new Dictionary<string, string>
+            {
+                ["provider-type"] = "process",
+                ["executable"] = Path.GetFileName(_options.ExecutablePath)
+            },
+            Metadata = new Dictionary<string, object?>
+            {
+                ["ExecutablePath"] = _options.ExecutablePath,
+                ["WorkingDirectory"] = _options.WorkingDirectory,
+                ["ConfigDirectory"] = _options.InstanceConfigDirectory,
+                ["TotalInstances"] = _instances.Count,
+                ["RunningInstances"] = runningCount
+            }
+        };
     }
 
     public async Task<PlacementProviderRuntimeInfo> DeployInstanceAsync(

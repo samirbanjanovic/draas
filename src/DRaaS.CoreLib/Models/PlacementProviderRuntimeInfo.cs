@@ -1,14 +1,5 @@
-﻿using System;
-using System.Collections.Generic;
-using System.Text;
+﻿namespace DRaaS.CoreLib.Models;
 
-namespace DRaaS.CoreLib.Models;
-
-/// <summary>
-/// Runtime information returned by platform providers.
-/// Contains platform-agnostic status and platform-specific metadata.
-/// Embedded directly in DrasiInstance for unified infrastructure state.
-/// </summary>
 public record PlacementProviderRuntimeInfo
 {
     public required string InstanceId { get; init; }

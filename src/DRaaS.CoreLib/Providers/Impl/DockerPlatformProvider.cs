@@ -39,7 +39,7 @@ public record DockerInstanceProviderOptions
     public string? NetworkName { get; init; }
 }
 
-public class DockerInstanceProvider : IPlatformInstanceProvider
+public class DockerPlatformProvider : IPlatformProvider
 {
     private record DockerRuntimeState
     {
@@ -59,7 +59,7 @@ public class DockerInstanceProvider : IPlatformInstanceProvider
     private readonly IDraasDockerClient _dockerClient;
     private readonly ConcurrentDictionary<string, DockerRuntimeState> _instances = new();
 
-    public DockerInstanceProvider(
+    public DockerPlatformProvider(
         IOptions<DockerInstanceProviderOptions> options,
         IDrasiConfigurationProvider configurationProvider,
         IDraasDockerClient dockerClient)
@@ -85,6 +85,40 @@ public class DockerInstanceProvider : IPlatformInstanceProvider
                 return false;
             }
         }
+    }
+
+    public PlatformInfo GetPlatformInfo()
+    {
+        var runningCount = 0;
+        var totalCount = _instances.Count;
+
+        foreach (var state in _instances.Values)
+        {
+            if (state.Status == PlacementProviderRuntimeStatus.Running)
+            {
+                runningCount++;
+            }
+        }
+
+        return new PlatformInfo
+        {
+            PlatformType = PlatformType,
+            IsAvailable = IsAvailable,
+            InstanceCount = runningCount,
+            Labels = new Dictionary<string, string>
+            {
+                ["provider-type"] = "docker",
+                ["image"] = _options.ImageName
+            },
+            Metadata = new Dictionary<string, object?>
+            {
+                ["ImageName"] = _options.ImageName,
+                ["ConfigMountPath"] = _options.ConfigMountPath,
+                ["NetworkName"] = _options.NetworkName ?? "default",
+                ["TotalInstances"] = totalCount,
+                ["RunningInstances"] = runningCount
+            }
+        };
     }
 
     public async Task<PlacementProviderRuntimeInfo> DeployInstanceAsync(
