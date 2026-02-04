@@ -1,3 +1,9 @@
 <Solution>
+  <Folder Name="/Solution Items/">
+    <File Path="../docs/DockerCliInteropIssue.md" />
+    <File Path="../docs/DockerInstanceProvider.md" />
+    <File Path="../docs/ProviderProjectOrganization.md" />
+    <File Path="../docs/ProviderStateMachine.md" />
+  </Folder>
   <Project Path="DRaaS.CoreLib/DRaaS.CoreLib.csproj" />
 </Solution>

@@ -7,8 +7,9 @@ namespace DRaaS.CoreLib.Models;
 /// <summary>
 /// Runtime information returned by platform providers.
 /// Contains platform-agnostic status and platform-specific metadata.
+/// Embedded directly in DrasiInstance for unified infrastructure state.
 /// </summary>
-public class PlacementProviderRuntimeInfo
+public record PlacementProviderRuntimeInfo
 {
     public required string InstanceId { get; init; }
     public required string PlatformType { get; init; }
@@ -18,9 +19,22 @@ public class PlacementProviderRuntimeInfo
     public DateTime? StoppedAt { get; init; }
 
     /// <summary>
-    /// Platform-specific metadata (e.g., ProcessId, ContainerId, PodName, resource limits).
-    /// Values can be primitive types, collections, or complex objects.
-    /// Ensure values are serializable if this info will be stored or transmitted.
+    /// When the infrastructure state was last synchronized with the provider.
     /// </summary>
+    public DateTime? LastSyncedAt { get; init; }
+
     public Dictionary<string, object?> PlatformMetadata { get; init; } = [];
+}
+
+public enum PlacementProviderRuntimeStatus
+{
+    Unknown = 0,
+    Deploying,
+    Deployed,
+    Starting,
+    Running,
+    Stopping,
+    Stopped,
+    Failed,
+    Deleted
 }

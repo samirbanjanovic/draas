@@ -21,7 +21,11 @@ public interface IPlatformInstanceProvider
     /// <summary>
     /// Deploys an instance (creates runtime environment without starting)
     /// </summary>
-    Task<PlacementProviderRuntimeInfo> DeployInstanceAsync(InstanceDeploymentInfo deploymentInfo, CancellationToken cancellationToken = default);
+    Task<PlacementProviderRuntimeInfo> DeployInstanceAsync(
+        string instanceId,
+        string instanceName,
+        DrasiConfiguration configuration,
+        CancellationToken cancellationToken = default);
 
     /// <summary>
     /// Starts a deployed instance

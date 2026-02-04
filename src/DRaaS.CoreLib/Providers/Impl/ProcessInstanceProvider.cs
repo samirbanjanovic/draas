@@ -41,6 +41,18 @@ public record ProcessInstanceProviderOptions
 
 public class ProcessInstanceProvider : IPlatformInstanceProvider
 {
+    private record ProcessRuntimeState
+    {
+        public required string InstanceId { get; init; }
+        public required string Name { get; init; }
+        public required string ConfigFilePath { get; init; }
+        public required DateTime DeployedAt { get; init; }
+        public Process? Process { get; init; }
+        public DateTime? StartedAt { get; init; }
+        public DateTime? StoppedAt { get; init; }
+        public PlacementProviderRuntimeStatus Status { get; init; }
+    }
+
     private readonly ProcessInstanceProviderOptions _options;
     private readonly IDrasiConfigurationProvider _configurationProvider;
     private readonly ConcurrentDictionary<string, ProcessRuntimeState> _instances = new();
@@ -79,32 +91,34 @@ public class ProcessInstanceProvider : IPlatformInstanceProvider
     }
 
     public async Task<PlacementProviderRuntimeInfo> DeployInstanceAsync(
-        InstanceDeploymentInfo deploymentInfo, 
+        string instanceId,
+        string instanceName,
+        DrasiConfiguration configuration,
         CancellationToken cancellationToken = default)
     {
         // Check if instance already exists
-        if (_instances.TryGetValue(deploymentInfo.InstanceId, out var existingState))
+        if (_instances.TryGetValue(instanceId, out var existingState))
         {
             // If process exists and is running, reject deployment
             if (existingState.Process != null && !existingState.Process.HasExited)
             {
                 throw new InvalidOperationException(
-                    $"Instance '{deploymentInfo.InstanceId}' is already deployed and active. " +
+                    $"Instance '{instanceId}' is already deployed and active. " +
                     $"Stop or delete the instance before redeploying."
                 );
             }
 
             // If process exists but has exited, or deployment exists, reject
             throw new InvalidOperationException(
-                $"Instance '{deploymentInfo.InstanceId}' is already deployed. " +
+                $"Instance '{instanceId}' is already deployed. " +
                 $"Delete the instance before redeploying."
             );
         }
 
         // Create instance-specific directory and configuration file
         var instanceDirectory = Path.Combine(
-            _options.InstanceConfigDirectory, 
-            deploymentInfo.InstanceId
+            _options.InstanceConfigDirectory,
+            instanceId
         );
 
         Directory.CreateDirectory(instanceDirectory);
@@ -112,9 +126,9 @@ public class ProcessInstanceProvider : IPlatformInstanceProvider
         var configFilePath = Path.Combine(instanceDirectory, "instance-config.yaml");
 
         await CreateConfigurationFileAsync(
-            deploymentInfo.InstanceId,
-            deploymentInfo.Configuration, 
-            configFilePath, 
+            instanceId,
+            configuration,
+            configFilePath,
             cancellationToken
         );
 
@@ -123,18 +137,18 @@ public class ProcessInstanceProvider : IPlatformInstanceProvider
         // Track deployment state (not started yet)
         var state = new ProcessRuntimeState
         {
-            InstanceId = deploymentInfo.InstanceId,
-            Name = deploymentInfo.Name,
+            InstanceId = instanceId,
+            Name = instanceName,
             ConfigFilePath = configFilePath,
             DeployedAt = deployedAt,
             Status = PlacementProviderRuntimeStatus.Deployed
         };
 
-        _instances.TryAdd(deploymentInfo.InstanceId, state);
+        _instances.TryAdd(instanceId, state);
 
         return new PlacementProviderRuntimeInfo
         {
-            InstanceId = deploymentInfo.InstanceId,
+            InstanceId = instanceId,
             PlatformType = PlatformType,
             Status = PlacementProviderRuntimeStatus.Deployed,
             DeployedAt = deployedAt,
@@ -148,7 +162,7 @@ public class ProcessInstanceProvider : IPlatformInstanceProvider
     }
 
     public Task<PlacementProviderRuntimeInfo> StartInstanceAsync(
-        string instanceId, 
+        string instanceId,
         CancellationToken cancellationToken = default)
     {
         if (!_instances.TryGetValue(instanceId, out var state))
@@ -158,21 +172,10 @@ public class ProcessInstanceProvider : IPlatformInstanceProvider
             );
         }
 
-        // Validate state transition is allowed
-        try
-        {
-            ProviderStateMachine.ValidateTransition(
-                state.Status, 
-                PlacementProviderRuntimeStatus.Running
-            );
-        }
-        catch (InvalidStateTransitionException ex)
-        {
-            throw new InvalidOperationException(
-                $"Cannot start instance '{instanceId}': {ex.Message}",
-                ex
-            );
-        }
+        ProviderStateMachine.ValidateTransition(
+            state.Status,
+            PlacementProviderRuntimeStatus.Running
+        );
 
         // Additional check: Ensure process isn't actually running
         if (state.Process != null && !state.Process.HasExited)
@@ -184,7 +187,7 @@ public class ProcessInstanceProvider : IPlatformInstanceProvider
             );
         }
 
-        // Dispose of old process reference if it exists (prevents memory leak)
+        // Dispose of old process reference if it exists
         if (state.Process != null)
         {
             try
@@ -226,7 +229,7 @@ public class ProcessInstanceProvider : IPlatformInstanceProvider
             _instances[instanceId] = failedState;
 
             throw new InvalidOperationException(
-                $"Failed to start process for instance '{instanceId}': {ex.Message}", 
+                $"Failed to start process for instance '{instanceId}': {ex.Message}",
                 ex
             );
         }
@@ -234,9 +237,9 @@ public class ProcessInstanceProvider : IPlatformInstanceProvider
         var startedAt = DateTime.UtcNow;
 
         // Update state
-        var updatedState = state with 
-        { 
-            Process = process, 
+        var updatedState = state with
+        {
+            Process = process,
             StartedAt = startedAt,
             Status = PlacementProviderRuntimeStatus.Running
         };
@@ -249,19 +252,12 @@ public class ProcessInstanceProvider : IPlatformInstanceProvider
             Status = PlacementProviderRuntimeStatus.Running,
             DeployedAt = state.DeployedAt,
             StartedAt = startedAt,
-            PlatformMetadata = new()
-            {
-                ["ProcessId"] = process.Id,
-                ["ConfigFilePath"] = state.ConfigFilePath,
-                ["ExecutablePath"] = _options.ExecutablePath,
-                ["WorkingDirectory"] = _options.WorkingDirectory,
-                ["HasExited"] = false
-            }
+            PlatformMetadata = CreateInstanceMetadata(state.ConfigFilePath, process)
         });
     }
 
     public async Task<PlacementProviderRuntimeInfo> StopInstanceAsync(
-        string instanceId, 
+        string instanceId,
         CancellationToken cancellationToken = default)
     {
         if (!_instances.TryGetValue(instanceId, out var state))
@@ -269,21 +265,10 @@ public class ProcessInstanceProvider : IPlatformInstanceProvider
             throw new KeyNotFoundException($"Instance '{instanceId}' not found.");
         }
 
-        // Validate state transition is allowed
-        try
-        {
-            ProviderStateMachine.ValidateTransition(
-                state.Status,
-                PlacementProviderRuntimeStatus.Stopped
-            );
-        }
-        catch (InvalidStateTransitionException ex)
-        {
-            throw new InvalidOperationException(
-                $"Cannot stop instance '{instanceId}': {ex.Message}",
-                ex
-            );
-        }
+        ProviderStateMachine.ValidateTransition(
+            state.Status,
+            PlacementProviderRuntimeStatus.Stopped
+        );
 
         if (state.Process == null)
         {
@@ -295,8 +280,8 @@ public class ProcessInstanceProvider : IPlatformInstanceProvider
         if (state.Process.HasExited)
         {
             // Process already exited - just update state
-            var exitedState = state with 
-            { 
+            var exitedState = state with
+            {
                 StoppedAt = DateTime.UtcNow,
                 Status = PlacementProviderRuntimeStatus.Stopped
             };
@@ -310,13 +295,7 @@ public class ProcessInstanceProvider : IPlatformInstanceProvider
                 DeployedAt = state.DeployedAt,
                 StartedAt = state.StartedAt,
                 StoppedAt = exitedState.StoppedAt,
-                PlatformMetadata = new()
-                {
-                    ["ProcessId"] = state.Process.Id,
-                    ["ConfigFilePath"] = state.ConfigFilePath,
-                    ["ExitCode"] = state.Process.ExitCode,
-                    ["HasExited"] = true
-                }
+                PlatformMetadata = CreateInstanceMetadata(state.ConfigFilePath, state.Process)
             };
         }
 
@@ -347,14 +326,14 @@ public class ProcessInstanceProvider : IPlatformInstanceProvider
         catch (Exception ex)
         {
             // Failed to stop - update state to Failed
-            var failedState = state with 
-            { 
+            var failedState = state with
+            {
                 Status = PlacementProviderRuntimeStatus.Failed
             };
             _instances[instanceId] = failedState;
 
             throw new InvalidOperationException(
-                $"Failed to stop instance '{instanceId}': {ex.Message}", 
+                $"Failed to stop instance '{instanceId}': {ex.Message}",
                 ex
             );
         }
@@ -362,8 +341,8 @@ public class ProcessInstanceProvider : IPlatformInstanceProvider
         var stoppedAt = DateTime.UtcNow;
 
         // Update state to Stopped
-        var updatedState = state with 
-        { 
+        var updatedState = state with
+        {
             StoppedAt = stoppedAt,
             Status = PlacementProviderRuntimeStatus.Stopped
         };
@@ -377,18 +356,12 @@ public class ProcessInstanceProvider : IPlatformInstanceProvider
             DeployedAt = state.DeployedAt,
             StartedAt = state.StartedAt,
             StoppedAt = stoppedAt,
-            PlatformMetadata = new()
-            {
-                ["ProcessId"] = state.Process?.Id,
-                ["ConfigFilePath"] = state.ConfigFilePath,
-                ["ExitCode"] = state.Process?.ExitCode,
-                ["HasExited"] = true
-            }
+            PlatformMetadata = CreateInstanceMetadata(state.ConfigFilePath, state.Process)
         };
     }
 
     public Task DeleteInstanceAsync(
-        string instanceId, 
+        string instanceId,
         CancellationToken cancellationToken = default)
     {
         if (!_instances.TryRemove(instanceId, out var state))
@@ -430,7 +403,7 @@ public class ProcessInstanceProvider : IPlatformInstanceProvider
     }
 
     public Task<PlacementProviderRuntimeInfo> GetInstanceInfoAsync(
-        string instanceId, 
+        string instanceId,
         CancellationToken cancellationToken = default)
     {
         if (!_instances.TryGetValue(instanceId, out var state))
@@ -460,24 +433,6 @@ public class ProcessInstanceProvider : IPlatformInstanceProvider
             }
         }
 
-        var metadata = new Dictionary<string, object?>
-        {
-            ["ConfigFilePath"] = state.ConfigFilePath,
-            ["ExecutablePath"] = _options.ExecutablePath,
-            ["WorkingDirectory"] = _options.WorkingDirectory,
-            ["HasExited"] = hasExited
-        };
-
-        if (state.Process != null)
-        {
-            metadata["ProcessId"] = state.Process.Id;
-        }
-
-        if (exitCode.HasValue)
-        {
-            metadata["ExitCode"] = exitCode.Value;
-        }
-
         return Task.FromResult(new PlacementProviderRuntimeInfo
         {
             InstanceId = instanceId,
@@ -486,7 +441,7 @@ public class ProcessInstanceProvider : IPlatformInstanceProvider
             DeployedAt = state.DeployedAt,
             StartedAt = state.StartedAt,
             StoppedAt = state.StoppedAt,
-            PlatformMetadata = metadata
+            PlatformMetadata = CreateInstanceMetadata(state.ConfigFilePath, state.Process)
         });
     }
 
@@ -503,17 +458,6 @@ public class ProcessInstanceProvider : IPlatformInstanceProvider
                 status = PlacementProviderRuntimeStatus.Stopped;
             }
 
-            var metadata = new Dictionary<string, object?>
-            {
-                ["ConfigFilePath"] = state.ConfigFilePath,
-                ["HasExited"] = hasExited
-            };
-
-            if (state.Process != null)
-            {
-                metadata["ProcessId"] = state.Process.Id;
-            }
-
             return new PlacementProviderRuntimeInfo
             {
                 InstanceId = state.InstanceId,
@@ -522,7 +466,7 @@ public class ProcessInstanceProvider : IPlatformInstanceProvider
                 DeployedAt = state.DeployedAt,
                 StartedAt = state.StartedAt,
                 StoppedAt = state.StoppedAt,
-                PlatformMetadata = metadata
+                PlatformMetadata = CreateInstanceMetadata(state.ConfigFilePath, state.Process)
             };
         });
 
@@ -531,8 +475,8 @@ public class ProcessInstanceProvider : IPlatformInstanceProvider
 
     private async Task CreateConfigurationFileAsync(
         string instanceId,
-        DrasiConfiguration configuration, 
-        string configFilePath, 
+        DrasiConfiguration configuration,
+        string configFilePath,
         CancellationToken cancellationToken)
     {
         var additionalSettings = new Dictionary<string, object?>
@@ -541,7 +485,7 @@ public class ProcessInstanceProvider : IPlatformInstanceProvider
         };
 
         var yamlContent = _configurationProvider.GenerateConfiguration(
-            instanceId, 
+            instanceId,
             configuration,
             additionalSettings
         );
@@ -556,8 +500,8 @@ public class ProcessInstanceProvider : IPlatformInstanceProvider
     }
 
     private static async Task<bool> WaitForExitAsync(
-        Process process, 
-        int timeoutMs, 
+        Process process,
+        int timeoutMs,
         CancellationToken cancellationToken)
     {
         try
@@ -574,15 +518,66 @@ public class ProcessInstanceProvider : IPlatformInstanceProvider
         }
     }
 
-    private record ProcessRuntimeState
+    /// <summary>
+    /// Creates comprehensive metadata dictionary from process state and configuration.
+    /// Automatically includes all available process information safely.
+    /// </summary>
+    private Dictionary<string, object?> CreateInstanceMetadata(
+        string configFilePath, 
+        Process? process)
     {
-        public required string InstanceId { get; init; }
-        public required string Name { get; init; }
-        public required string ConfigFilePath { get; init; }
-        public required DateTime DeployedAt { get; init; }
-        public Process? Process { get; init; }
-        public DateTime? StartedAt { get; init; }
-        public DateTime? StoppedAt { get; init; }
-        public PlacementProviderRuntimeStatus Status { get; init; }
+        var metadata = new Dictionary<string, object?>
+        {
+            ["ConfigFilePath"] = configFilePath,
+            ["ExecutablePath"] = _options.ExecutablePath,
+            ["WorkingDirectory"] = _options.WorkingDirectory,
+            ["HasExited"] = process?.HasExited ?? true
+        };
+
+        if (process != null)
+        {
+            // Define all process property extractors - automatically handles availability and errors
+            var extractors = new (string Key, Func<object?> Extractor)[]
+            {
+                ("ProcessId", () => process.Id),
+                ("ProcessName", () => process.ProcessName),
+                ("MachineName", () => process.MachineName),
+                ("StartTime", () => !process.HasExited ? process.StartTime : null),
+                ("ExitTime", () => process.HasExited ? process.ExitTime : null),
+                ("ExitCode", () => process.HasExited ? process.ExitCode : null),
+                ("WorkingSet64", () => !process.HasExited ? process.WorkingSet64 : null),
+                ("PrivateMemorySize64", () => !process.HasExited ? process.PrivateMemorySize64 : null)
+            };
+
+            foreach (var (key, extractor) in extractors)
+            {
+                SafeExtract(metadata, key, extractor);
+            }
+        }
+
+        return metadata;
+    }
+
+    /// <summary>
+    /// Safely extracts a value using the provided extractor and adds it to metadata if successful.
+    /// Handles all exceptions silently - missing or unavailable properties are simply not added.
+    /// </summary>
+    private static void SafeExtract(
+        Dictionary<string, object?> metadata, 
+        string key, 
+        Func<object?> extractor)
+    {
+        try
+        {
+            var value = extractor();
+            if (value != null)
+            {
+                metadata[key] = value;
+            }
+        }
+        catch
+        {
+            // Property not available or threw exception - skip it
+        }
     }
 }

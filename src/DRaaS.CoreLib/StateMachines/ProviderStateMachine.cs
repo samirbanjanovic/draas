@@ -32,8 +32,8 @@ public class InvalidStateTransitionException : InvalidOperationException
             ? string.Join(", ", validTransitions)
             : "none (terminal state)";
 
-        return $"State '{toState}' is not reachable from '{fromState}'. " +
-               $"Valid direct transitions from '{fromState}': {validTransitionsText}";
+        return $"Instance cannot be set to '{toState}' while in '{fromState}' state. " +
+               $"Valid direct transitions from '{fromState}' -> {validTransitionsText}";
     }
 }
 
