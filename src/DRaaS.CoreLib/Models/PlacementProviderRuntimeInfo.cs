@@ -17,12 +17,7 @@ public record PlacementProviderRuntimeInfo
     public DateTime? DeployedAt { get; init; }
     public DateTime? StartedAt { get; init; }
     public DateTime? StoppedAt { get; init; }
-
-    /// <summary>
-    /// When the infrastructure state was last synchronized with the provider.
-    /// </summary>
     public DateTime? LastSyncedAt { get; init; }
-
     public Dictionary<string, object?> PlatformMetadata { get; init; } = [];
 }
 

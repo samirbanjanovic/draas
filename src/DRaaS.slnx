@@ -1,9 +1,15 @@
 <Solution>
   <Folder Name="/Solution Items/">
+    <File Path="../docs/ArchitectureSimplificationAnalysis.md" />
+    <File Path="../docs/CommandRemoval-Simplification.md" />
     <File Path="../docs/DockerCliInteropIssue.md" />
     <File Path="../docs/DockerInstanceProvider.md" />
+    <File Path="../docs/DRaaS-CoreLib-UnifiedArchitecture-Summary.md" />
+    <File Path="../docs/ModelCategorization-Analysis.md" />
     <File Path="../docs/ProviderProjectOrganization.md" />
     <File Path="../docs/ProviderStateMachine.md" />
+    <File Path="../docs/RESTORATION-SUMMARY.md" />
+    <File Path="../docs/StateHistory-Stack-Optimization.md" />
   </Folder>
   <Project Path="DRaaS.CoreLib/DRaaS.CoreLib.csproj" />
 </Solution>

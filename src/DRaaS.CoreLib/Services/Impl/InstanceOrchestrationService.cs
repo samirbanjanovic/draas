@@ -108,14 +108,10 @@ public class InstanceOrchestrationService : IInstanceOrchestrationService
             throw;
         }
 
-        // Update runtime info with sync timestamp
         runtimeInfo = runtimeInfo with { LastSyncedAt = DateTime.UtcNow };
 
-        instance = instance with
-        {
-            Placement = runtimeInfo,
-            LastUpdatedAt = DateTime.UtcNow
-        };
+        instance.Placement = runtimeInfo;
+        instance.LastUpdatedAt = DateTime.UtcNow;
 
         instance = await AddStateTransitionAsync(instance, Status.Created,
             new Dictionary<string, string> { ["PlatformType"] = provider.PlatformType },
@@ -168,11 +164,8 @@ public class InstanceOrchestrationService : IInstanceOrchestrationService
             throw;
         }
 
-        instance = instance with
-        {
-            Placement = runtimeInfo with { LastSyncedAt = DateTime.UtcNow },
-            LastUpdatedAt = DateTime.UtcNow
-        };
+        instance.Placement = runtimeInfo with { LastSyncedAt = DateTime.UtcNow };
+        instance.LastUpdatedAt = DateTime.UtcNow;
 
         var status = MapProviderStatusToInstanceStatus(runtimeInfo.Status);
         instance = await AddStateTransitionAsync(instance, status,
@@ -226,11 +219,8 @@ public class InstanceOrchestrationService : IInstanceOrchestrationService
             throw;
         }
 
-        instance = instance with
-        {
-            Placement = runtimeInfo with { LastSyncedAt = DateTime.UtcNow },
-            LastUpdatedAt = DateTime.UtcNow
-        };
+        instance.Placement = runtimeInfo with { LastSyncedAt = DateTime.UtcNow };
+        instance.LastUpdatedAt = DateTime.UtcNow;
 
         var status = MapProviderStatusToInstanceStatus(runtimeInfo.Status);
         instance = await AddStateTransitionAsync(instance, status,
@@ -290,10 +280,9 @@ public class InstanceOrchestrationService : IInstanceOrchestrationService
             cancellationToken);
     }
 
-    // ========================================
-    // CONFIGURATION MANAGEMENT
-    // ========================================
 
+    // a configuration update should trigger a redeploy in the future
+    // for now, we only allow updates when the instance is stopped or created
     public async Task<DrasiInstance> UpdateInstanceConfigurationAsync(
         string instanceId,
         DrasiConfiguration configuration,
@@ -313,14 +302,11 @@ public class InstanceOrchestrationService : IInstanceOrchestrationService
                 $"Instance {instanceId} must be stopped before updating configuration. Current state: {instance.CurrentStatus}");
         }
 
-        var updatedInstance = instance with
-        {
-            Configuration = configuration,
-            MetaData = metadata ?? instance.MetaData,
-            LastUpdatedAt = DateTime.UtcNow
-        };
+        instance.Configuration = configuration;
+        instance.MetaData = metadata ?? instance.MetaData;
+        instance.LastUpdatedAt = DateTime.UtcNow;
 
-        return await _storageService.UpdateInstanceAsync(updatedInstance, cancellationToken);
+        return await _storageService.UpdateInstanceAsync(instance, cancellationToken);
     }
 
     public async Task<DrasiInstance> UpdateInstanceMetadataAsync(
@@ -333,18 +319,11 @@ public class InstanceOrchestrationService : IInstanceOrchestrationService
 
         var instance = await _storageService.GetInstanceAsync(instanceId, cancellationToken);
 
-        var updatedInstance = instance with
-        {
-            MetaData = metadata,
-            LastUpdatedAt = DateTime.UtcNow
-        };
+        instance.MetaData = metadata;
+        instance.LastUpdatedAt = DateTime.UtcNow;
 
-        return await _storageService.UpdateInstanceAsync(updatedInstance, cancellationToken);
+        return await _storageService.UpdateInstanceAsync(instance, cancellationToken);
     }
-
-    // ========================================
-    // QUERY OPERATIONS
-    // ========================================
 
     public async Task<DrasiInstance> GetInstanceAsync(
         string instanceId,
@@ -365,11 +344,8 @@ public class InstanceOrchestrationService : IInstanceOrchestrationService
 
                 var runtimeInfo = await provider.GetInstanceInfoAsync(instanceId, cancellationToken);
 
-                instance = instance with
-                {
-                    Placement = runtimeInfo with { LastSyncedAt = DateTime.UtcNow },
-                    LastUpdatedAt = DateTime.UtcNow
-                };
+                instance.Placement = runtimeInfo with { LastSyncedAt = DateTime.UtcNow };
+                instance.LastUpdatedAt = DateTime.UtcNow;
 
                 var providerStatus = MapProviderStatusToInstanceStatus(runtimeInfo.Status);
                 if (instance.CurrentStatus != providerStatus)
@@ -414,10 +390,6 @@ public class InstanceOrchestrationService : IInstanceOrchestrationService
         return allInstances.Where(i => i.CurrentStatus == status);
     }
 
-    // ========================================
-    // PLATFORM INFORMATION
-    // ========================================
-
     public async Task<IEnumerable<PlatformInfo>> GetAvailablePlatformsAsync(
         CancellationToken cancellationToken = default)
     {
@@ -447,11 +419,7 @@ public class InstanceOrchestrationService : IInstanceOrchestrationService
             Metadata = new Dictionary<string, object?>()
         };
     }
-
-    // ========================================
-    // HELPER METHODS
-    // ========================================
-
+    
     private static Status MapProviderStatusToInstanceStatus(PlacementProviderRuntimeStatus providerStatus)
     {
         return providerStatus switch
@@ -482,18 +450,9 @@ public class InstanceOrchestrationService : IInstanceOrchestrationService
             StateMetadata = metadata
         };
 
-        // Create new stack preserving order: reverse existing stack to get oldest->newest,
-        // then create new stack from that (which reverses it back to newest->oldest),
-        // then push the new state on top
-        var stateHistory = new Stack<DrasiInstanceState>(instance.StateHistory.Reverse());
-        stateHistory.Push(newState);
+        instance.StateHistory.Push(newState);
+        instance.LastUpdatedAt = DateTime.UtcNow;
 
-        var updatedInstance = instance with
-        {
-            StateHistory = stateHistory,
-            LastUpdatedAt = DateTime.UtcNow
-        };
-
-        return await _storageService.UpdateInstanceAsync(updatedInstance, cancellationToken);
+        return await _storageService.UpdateInstanceAsync(instance, cancellationToken);
     }
 }

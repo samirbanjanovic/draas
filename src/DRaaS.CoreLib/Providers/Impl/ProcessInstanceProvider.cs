@@ -177,10 +177,8 @@ public class ProcessInstanceProvider : IPlatformInstanceProvider
             PlacementProviderRuntimeStatus.Running
         );
 
-        // Additional check: Ensure process isn't actually running
         if (state.Process != null && !state.Process.HasExited)
         {
-            // State says stopped/failed, but process is running - this is a bug
             throw new InvalidOperationException(
                 $"Instance '{instanceId}' has a running process despite status '{state.Status}'. " +
                 $"This indicates a state inconsistency. Stop the instance first."
