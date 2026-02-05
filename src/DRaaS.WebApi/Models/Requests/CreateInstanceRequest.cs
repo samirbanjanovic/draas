@@ -17,14 +17,22 @@ public record CreateInstanceRequest
 
 /// <summary>
 /// Configuration DTO used in create requests.
-/// Uses arrays for straightforward input.
+/// Contains only user-configurable instance settings (not hosting details).
 /// </summary>
 public record ConfigurationDto
 {
-    public required string Host { get; init; }
-    public required int Port { get; init; }
-    public required string LogLevel { get; init; }
+    /// <summary>
+    /// Data sources for the instance.
+    /// </summary>
     public List<SourceDto>? Sources { get; init; }
+
+    /// <summary>
+    /// Continuous queries to execute.
+    /// </summary>
     public List<QueryDto>? Queries { get; init; }
+
+    /// <summary>
+    /// Reactions triggered by query results.
+    /// </summary>
     public List<ReactionDto>? Reactions { get; init; }
 }

@@ -19,23 +19,20 @@ public class InstancePatchDto
 /// Configuration DTO optimized for JSON Patch operations.
 /// Arrays are represented as dictionaries keyed by ID for ID-based addressing.
 /// Example: /configuration/sources/my-source-id instead of /configuration/sources/0
+/// Contains only user-configurable instance settings (not hosting details).
 /// </summary>
 public class ConfigurationPatchDto
 {
-    public string? Host { get; set; }
-    public int? Port { get; set; }
-    public string? LogLevel { get; set; }
-    
     /// <summary>
     /// Sources keyed by Source.Id for ID-based patch addressing.
     /// </summary>
     public Dictionary<string, SourceDto>? Sources { get; set; }
-    
+
     /// <summary>
     /// Queries keyed by Query.Id for ID-based patch addressing.
     /// </summary>
     public Dictionary<string, QueryDto>? Queries { get; set; }
-    
+
     /// <summary>
     /// Reactions keyed by Reaction.Id for ID-based patch addressing.
     /// </summary>

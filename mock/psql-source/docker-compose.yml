@@ -1,0 +1,94 @@
+# PostgreSQL configured for Drasi Change Data Capture (CDC)
+# 
+# This setup enables logical replication required for Drasi to detect
+# and react to database changes in real-time.
+#
+# Usage:
+#   docker-compose up -d      # Start PostgreSQL
+#   docker-compose down       # Stop and remove containers (data persisted)
+#   docker-compose down -v    # Stop and remove containers AND volumes (data lost)
+#
+# Connection Details:
+#   Host: localhost (or host.docker.internal from containers)
+#   Port: 5432
+#   Database: drasidb
+#   User: drasi
+#   Password: drasi_password
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: drasi-postgres-source
+    restart: unless-stopped
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_DB: drasidb
+      POSTGRES_USER: drasi
+      POSTGRES_PASSWORD: drasi_password
+      # Required for Drasi CDC - sets wal_level=logical at init
+      POSTGRES_INITDB_ARGS: "--data-checksums"
+    volumes:
+      # Persist database data across container restarts
+      - postgres_data:/var/lib/postgresql/data
+      # Custom PostgreSQL configuration for logical replication
+      - ./init:/docker-entrypoint-initdb.d:ro
+    command:
+      - "postgres"
+      # Enable logical replication for Drasi/Debezium CDC
+      - "-c"
+      - "wal_level=logical"
+      # Maximum number of replication connections
+      - "-c"
+      - "max_wal_senders=10"
+      # Maximum number of replication slots (one per Drasi source)
+      - "-c"
+      - "max_replication_slots=10"
+      # Keep more WAL for replication lag scenarios
+      - "-c"
+      - "wal_keep_size=512MB"
+      # Log replication commands for debugging
+      - "-c"
+      - "log_replication_commands=on"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U drasi -d drasidb"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    networks:
+      - drasi-network
+
+  # Optional: pgAdmin for database management UI
+  pgadmin:
+    image: dpage/pgadmin4:latest
+    container_name: drasi-pgadmin
+    restart: unless-stopped
+    profiles:
+      - tools
+    ports:
+      - "5050:80"
+    environment:
+      PGADMIN_DEFAULT_EMAIL: admin@drasi.local
+      PGADMIN_DEFAULT_PASSWORD: admin
+      PGADMIN_CONFIG_SERVER_MODE: "False"
+    volumes:
+      - pgadmin_data:/var/lib/pgadmin
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - drasi-network
+
+volumes:
+  postgres_data:
+    driver: local
+    name: drasi-postgres-data
+  pgadmin_data:
+    driver: local
+    name: drasi-pgadmin-data
+
+networks:
+  drasi-network:
+    driver: bridge
+    name: drasi-network
