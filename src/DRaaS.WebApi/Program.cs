@@ -18,7 +18,8 @@ public class Program
                         .AddBaremetalPlatform();
 
         // API Services
-        builder.Services.AddControllers();
+        builder.Services.AddControllers()
+            .AddNewtonsoftJson();
         builder.Services.AddOpenApi();
 
         var app = builder.Build();
