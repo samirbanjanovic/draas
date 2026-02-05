@@ -42,9 +42,6 @@ public static class InstanceMapper
     {
         return new ConfigurationResponseDto
         {
-            Host = config.Host,
-            Port = config.Port,
-            LogLevel = config.LogLevel,
             Sources = config.Sources?.Select(s => s.ToDto()).ToList(),
             Queries = config.Queries?.Select(q => q.ToDto()).ToList(),
             Reactions = config.Reactions?.Select(r => r.ToDto()).ToList()
@@ -103,9 +100,6 @@ public static class InstanceMapper
     {
         return new ConfigurationPatchDto
         {
-            Host = config.Host,
-            Port = config.Port,
-            LogLevel = config.LogLevel,
             Sources = config.Sources?.ToDictionary(s => s.Id, s => s.ToDto()),
             Queries = config.Queries?.ToDictionary(q => q.Id, q => q.ToDto()),
             Reactions = config.Reactions?.ToDictionary(r => r.Id, r => r.ToDto())
@@ -118,14 +112,17 @@ public static class InstanceMapper
 
     /// <summary>
     /// Maps a create request configuration to domain model.
+    /// Platform hosting details (Host, Port, LogLevel) use defaults - not user configurable.
     /// </summary>
     public static DrasiConfiguration ToDomainModel(this ConfigurationDto dto)
     {
         return new DrasiConfiguration
         {
-            Host = dto.Host,
-            Port = dto.Port,
-            LogLevel = dto.LogLevel,
+            // Platform defaults - not exposed to users
+            Host = "0.0.0.0",
+            Port = 8080,
+            LogLevel = "Info",
+            // User-configurable settings
             Sources = dto.Sources?.Select(s => s.ToDomainModel()).ToList(),
             Queries = dto.Queries?.Select(q => q.ToDomainModel()).ToList(),
             Reactions = dto.Reactions?.Select(r => r.ToDomainModel()).ToList()
@@ -134,14 +131,17 @@ public static class InstanceMapper
 
     /// <summary>
     /// Maps a patch DTO configuration (dictionaries) to domain model (arrays).
+    /// Platform hosting details use defaults - not user configurable.
     /// </summary>
     public static DrasiConfiguration ToDomainModel(this ConfigurationPatchDto dto)
     {
         return new DrasiConfiguration
         {
-            Host = dto.Host ?? "0.0.0.0",
-            Port = dto.Port ?? 8080,
-            LogLevel = dto.LogLevel ?? "Info",
+            // Platform defaults - not exposed to users
+            Host = "0.0.0.0",
+            Port = 8080,
+            LogLevel = "Info",
+            // User-configurable settings
             Sources = dto.Sources?.Values.Select(s => s.ToDomainModel()).ToList(),
             Queries = dto.Queries?.Values.Select(q => q.ToDomainModel()).ToList(),
             Reactions = dto.Reactions?.Values.Select(r => r.ToDomainModel()).ToList()
